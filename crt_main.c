@@ -282,6 +282,7 @@ main(int argc, char **argv)
     return EXIT_SUCCESS;
 }
 #else
+#include <sys/stat.h>
 #include "fw.h"
 #if 0
 #define XMAX 624
@@ -298,6 +299,13 @@ static struct CRT crt;
 static int *img;
 static int imgw;
 static int imgh;
+
+/* frame sequence state */
+static char framedir[512]; /* directory path for BMP frame sequence */
+static int frameseq = 0;   /* non-zero if playing a frame sequence */
+static int frameidx = 1;   /* current frame number (1-based) */
+static int frametotal = 0; /* total number of frames (0 = unknown, loop until missing) */
+static int frameloop = 1;  /* loop back to frame 1 when done */
 
 static int color = 1;
 static int noise = 12;
@@ -451,11 +459,43 @@ fade_phosphors(void)
     }
 }
 
+static int
+load_next_frame(void)
+{
+    char buf[600];
+    int *newimg = NULL;
+    int neww, newh;
+
+    snprintf(buf, sizeof(buf), "%s/%06d.bmp", framedir, frameidx);
+    if (!bmp_read24(buf, &newimg, &neww, &newh, calloc)) {
+        return 0;
+    }
+    if (img != NULL) {
+        free(img);
+    }
+    img = newimg;
+    imgw = neww;
+    imgh = newh;
+    return 1;
+}
+
 static void
 displaycb(void)
 {
     static struct NTSC_SETTINGS ntsc;
-  
+
+    /* advance frame if playing a sequence */
+    if (frameseq) {
+        if (!load_next_frame()) {
+            if (frameloop) {
+                frameidx = 1;
+                load_next_frame();
+            }
+        } else {
+            frameidx++;
+        }
+    }
+
     if (fadephos) {
         fade_phosphors();
     } else {
@@ -529,20 +569,42 @@ main(int argc, char **argv)
     crt.scanlines = 1;
 
     if (argc == 1) {
-        fprintf(stderr, "Please specify PPM or BMP image input file.\n");
+        fprintf(stderr, "Please specify PPM or BMP image, or directory of BMP frames.\n");
         return EXIT_FAILURE;
     }
     input_file = argv[1];
-    
-    if (cmpsuf(input_file, ".ppm", 4) == 0) {
-        if (!ppm_read24(input_file, &img, &imgw, &imgh, calloc)) {
-            fprintf(stderr, "unable to read image\n");
-            return EXIT_FAILURE;
-        }
-    } else {
-        if (!bmp_read24(input_file, &img, &imgw, &imgh, calloc)) {
-            fprintf(stderr, "unable to read image\n");
-            return EXIT_FAILURE;
+
+    /* check if input is a directory (frame sequence) */
+    {
+        struct stat st;
+        if (stat(input_file, &st) == 0 && S_ISDIR(st.st_mode)) {
+            frameseq = 1;
+            snprintf(framedir, sizeof(framedir), "%s", input_file);
+            /* strip trailing slash */
+            {
+                size_t len = strlen(framedir);
+                if (len > 0 && framedir[len - 1] == '/') {
+                    framedir[len - 1] = '\0';
+                }
+            }
+            frameidx = 1;
+            if (!load_next_frame()) {
+                fprintf(stderr, "no frames found in %s (expected %s/000001.bmp)\n",
+                        framedir, framedir);
+                return EXIT_FAILURE;
+            }
+            frameidx = 2; /* first frame already loaded, start from 2 */
+            printf("playing frame sequence from %s/\n", framedir);
+        } else if (cmpsuf(input_file, ".ppm", 4) == 0) {
+            if (!ppm_read24(input_file, &img, &imgw, &imgh, calloc)) {
+                fprintf(stderr, "unable to read image\n");
+                return EXIT_FAILURE;
+            }
+        } else {
+            if (!bmp_read24(input_file, &img, &imgw, &imgh, calloc)) {
+                fprintf(stderr, "unable to read image\n");
+                return EXIT_FAILURE;
+            }
         }
     }
 
