@@ -471,7 +471,7 @@ displaycb(void)
     ntsc.dot_crawl_offset = (ntsc.dot_crawl_offset + 1) % CRT_CC_VPER;
     ntsc.hue = hue;
 #else
-    ntsc.data = img;
+    ntsc.data = (unsigned char *)img;
     ntsc.format = CRT_PIX_FORMAT_BGRA;
     ntsc.w = imgw;
     ntsc.h = imgh;
@@ -524,7 +524,7 @@ main(int argc, char **argv)
     
     printf(DRV_HEADER);
 
-    crt_init(&crt, info->width, info->height, CRT_PIX_FORMAT_BGRA, video);
+    crt_init(&crt, info->width, info->height, CRT_PIX_FORMAT_BGRA, (unsigned char *)video);
     crt.blend = 1;
     crt.scanlines = 1;
 
