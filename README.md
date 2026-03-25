@@ -198,6 +198,84 @@ Most modifications should only be to the constants defined in crt_template.h
 
 ------
 
+## Python Bindings
+
+Python bindings are available via [cffi](https://cffi.readthedocs.io/), wrapping all 7 CRT system variants as separate shared libraries.
+
+### Prerequisites
+
+- Python 3.8+
+- A C compiler (gcc, clang, etc.)
+
+### Building
+
+```sh
+cd NTSC-CRT
+
+# Create and activate a virtual environment
+python3 -m venv venv
+source venv/bin/activate   # Linux/macOS
+# venv\Scripts\activate    # Windows
+
+# Install dependencies
+pip install cffi numpy setuptools
+
+# Build all system extensions
+cd python
+python build_crt.py
+```
+
+This compiles 7 shared libraries into `python/lib/`, one for each system:
+`ntsc`, `nes`, `pv1k`, `snes`, `template`, `ntscvhs`, `nesrgb`
+
+### Usage
+
+```python
+from python.ntsc_crt import CRT
+import numpy as np
+
+# Load your image as a numpy array (H, W, 4) uint8 in BGRA format
+image = ...
+
+# Create a CRT processor (any system: "ntsc", "nes", "snes", "ntscvhs", etc.)
+crt = CRT("ntsc", out_w=640, out_h=480)
+crt.blend = True
+crt.scanlines = True
+
+# Process the image
+output = crt.process(image, noise=24, num_frames=4)
+# output is a (480, 640, 4) uint8 numpy array in BGRA format
+```
+
+### Available systems
+
+| System     | Description                     |
+|------------|---------------------------------|
+| `ntsc`     | Standard NTSC                   |
+| `nes`      | NES 6/9-bit pixel output        |
+| `pv1k`     | Casio PV-1000                   |
+| `snes`     | Super Nintendo (RGB)            |
+| `template` | Template / custom system        |
+| `ntscvhs`  | NTSC with VHS quality           |
+| `nesrgb`   | NES with RGB artifacts          |
+
+### CRT settings
+
+All monitor settings are adjustable as properties on the `CRT` object:
+
+```python
+crt.hue          # color hue offset
+crt.brightness   # brightness adjustment
+crt.contrast     # contrast level
+crt.saturation   # color saturation
+crt.black_point  # black level
+crt.white_point  # white level
+crt.scanlines    # enable scanline gaps (True/False)
+crt.blend        # blend onto previous field (True/False)
+```
+
+------
+
 ### Emulators
 These emulators have this NTSC filter as an option:  
 puNES: https://github.com/punesemu/puNES  
