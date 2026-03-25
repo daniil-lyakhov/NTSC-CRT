@@ -819,3 +819,27 @@ automatically added to `sys.path` when you import `ntsc_crt`.
 - Ensure the input numpy array is contiguous (`np.ascontiguousarray()`)
 - Ensure the input image dimensions and dtype match expectations
 - Don't reuse a `CRT` object across threads without synchronization
+
+---
+
+## Note on Blending
+
+When `blend=True`, `demodulate()` averages each new pixel with the existing
+value in the output buffer using a fast 50/50 bit-shift blend:
+
+```c
+output = (new >> 1) + (old >> 1)
+```
+
+This is **not** a physically accurate model of CRT phosphor decay. Real phosphors
+follow an exponential decay curve with timing characteristics that vary by type
+(e.g. P22 for color TVs decays in ~1-2ms). The 50% ratio was chosen because it
+is essentially free in C (just bit shifts, no multiply), looks visually plausible,
+and is a standard technique used across retro emulators. The blend ratio is not
+configurable — it is hardcoded in the C library (`crt_core.c`).
+
+For video processing, this means previous frames influence subsequent ones:
+each frame's output carries ~50% of the previous frame, ~25% of the one before
+that, and so on — decaying exponentially. This produces a subtle ghosting that
+resembles real CRT persistence. If you want fully independent frames, set
+`blend=False`.
