@@ -1,0 +1,7 @@
+numpy
+cffi
+setuptools
+opencv-python-headless
+scipy
+matplotlib
+ipywidgets
