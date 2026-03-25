@@ -392,6 +392,26 @@ class CRT:
         signal = np.frombuffer(buf, dtype=np.int8).copy()
         return signal.reshape(vres, hres)
 
+    def set_analog_signal(self, signal):
+        """Write a modified analog signal back into the CRT buffer.
+
+        Call this between modulate() and demodulate() to alter the
+        intermediate NTSC waveform before it is decoded.
+
+        Parameters
+        ----------
+        signal : numpy.ndarray
+            int8 array shaped (VRES, HRES) matching the system dimensions.
+        """
+        hres, vres = _SIGNAL_DIMS[self._system]
+        sig = np.asarray(signal, dtype=np.int8)
+        if sig.shape != (vres, hres):
+            raise ValueError(
+                f"expected shape ({vres}, {hres}), got {sig.shape}"
+            )
+        buf = self._ffi.buffer(self._crt.analog, hres * vres)
+        buf[:] = sig.tobytes()
+
     def process(
         self,
         image,
