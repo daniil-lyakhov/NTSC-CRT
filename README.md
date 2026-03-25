@@ -213,12 +213,12 @@ Python bindings are available via [cffi](https://cffi.readthedocs.io/), wrapping
 cd NTSC-CRT
 
 # Create and activate a virtual environment
-python3 -m venv venv
-source venv/bin/activate   # Linux/macOS
-# venv\Scripts\activate    # Windows
+python3 -m venv env
+source env/bin/activate   # Linux/macOS
+# env\Scripts\activate    # Windows
 
 # Install dependencies
-pip install cffi numpy setuptools
+pip install -r requirements.txt
 
 # Build all system extensions
 cd python

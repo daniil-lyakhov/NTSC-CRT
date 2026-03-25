@@ -67,6 +67,17 @@ _DOT_CRAWL_SYSTEMS = {"nes", "pv1k", "snes", "template", "nesrgb"}
 _ABERRATION_SYSTEMS = {"ntscvhs"}
 _FORMAT_SYSTEMS = {"ntsc", "pv1k", "snes", "template", "ntscvhs", "nesrgb"}
 
+# Signal dimensions per system (HRES, VRES)
+_SIGNAL_DIMS = {
+    "ntsc":     (910, 262),
+    "nes":      (909, 262),
+    "pv1k":     (1920, 262),
+    "snes":     (909, 262),
+    "template": (910, 262),
+    "ntscvhs":  (910, 262),
+    "nesrgb":   (909, 262),
+}
+
 
 def _load_module(system):
     """Import the cffi-compiled extension for a given system."""
@@ -214,9 +225,172 @@ class CRT:
         self._out_format = fmt
         self._bpp = bpp
 
+    @property
+    def signal_hres(self):
+        """Horizontal resolution of the analog signal in samples."""
+        return _SIGNAL_DIMS[self._system][0]
+
+    @property
+    def signal_vres(self):
+        """Vertical resolution of the analog signal in lines."""
+        return _SIGNAL_DIMS[self._system][1]
+
     def reset(self):
         """Reset CRT settings to defaults."""
         self._lib.crt_reset(self._crt)
+
+    def _make_ntsc_settings(
+        self,
+        image,
+        hue=0,
+        raw=False,
+        as_color=True,
+        in_format=PIX_FORMAT_BGRA,
+        dot_crawl_offset=0,
+        do_aberration=False,
+        field=0,
+        frame=0,
+        xoffset=0,
+        yoffset=0,
+    ):
+        """Create and populate an NTSC_SETTINGS struct from an image."""
+        image = np.ascontiguousarray(image)
+        sys = self._system
+
+        ntsc = self._ffi.new("struct NTSC_SETTINGS *")
+        self._ffi.buffer(ntsc)[:] = b"\x00" * self._ffi.sizeof("struct NTSC_SETTINGS")
+
+        if sys in _PALETTE_SYSTEMS:
+            if image.dtype != np.uint16:
+                image = image.astype(np.uint16)
+            data_ptr = self._ffi.cast(
+                "const unsigned short *",
+                self._ffi.from_buffer(image),
+            )
+            ntsc.data = data_ptr
+        else:
+            if image.dtype != np.uint8:
+                image = image.astype(np.uint8)
+            data_ptr = self._ffi.cast(
+                "const unsigned char *",
+                self._ffi.from_buffer(image),
+            )
+            ntsc.data = data_ptr
+
+        if image.ndim >= 2:
+            h, w = image.shape[0], image.shape[1]
+        else:
+            raise ValueError(f"Unexpected image shape: {image.shape}")
+
+        ntsc.w = w
+        ntsc.h = h
+        ntsc.hue = hue % 360
+        ntsc.xoffset = xoffset
+        ntsc.yoffset = yoffset
+
+        if sys in _FORMAT_SYSTEMS:
+            ntsc.format = in_format
+        if sys in _RAW_SYSTEMS:
+            ntsc.raw = int(raw)
+        if sys in _AS_COLOR_SYSTEMS:
+            ntsc.as_color = int(as_color)
+        if sys in _DOT_CRAWL_SYSTEMS:
+            ntsc.dot_crawl_offset = dot_crawl_offset
+        if sys in _ABERRATION_SYSTEMS:
+            ntsc.do_aberration = int(do_aberration)
+        if sys in _FIELD_FRAME_SYSTEMS:
+            ntsc.field = field
+            ntsc.frame = frame
+
+        # Keep references alive so the GC doesn't collect the image buffer
+        return ntsc, image
+
+    def modulate(
+        self,
+        image,
+        hue=0,
+        raw=False,
+        as_color=True,
+        in_format=PIX_FORMAT_BGRA,
+        dot_crawl_offset=0,
+        do_aberration=False,
+        field=0,
+        frame=0,
+        xoffset=0,
+        yoffset=0,
+    ):
+        """Encode an image into an analog NTSC signal.
+
+        After calling this, read the signal with get_analog_signal().
+
+        Parameters
+        ----------
+        image : numpy.ndarray
+            Input image. For RGB systems: uint8 (H, W, 3) or (H, W, 4).
+            For NES: uint16 (H, W).
+        hue : int
+            Artifact color hue offset (0-359).
+        raw : bool
+            Don't scale image to fit.
+        as_color : bool
+            True = color, False = monochrome.
+        in_format : int
+            Input pixel format.
+        dot_crawl_offset : int
+            Dot crawl phase.
+        do_aberration : bool
+            VHS aberration (ntscvhs only).
+        field : int
+            0 = even, 1 = odd.
+        frame : int
+            0 = even, 1 = odd.
+        xoffset : int
+            Horizontal offset in samples.
+        yoffset : int
+            Vertical offset in lines.
+        """
+        ntsc, _img_ref = self._make_ntsc_settings(
+            image, hue, raw, as_color, in_format,
+            dot_crawl_offset, do_aberration, field, frame,
+            xoffset, yoffset,
+        )
+        self._lib.crt_modulate(self._crt, ntsc)
+
+    def demodulate(self, noise=24):
+        """Decode the analog NTSC signal to the output image buffer.
+
+        Call modulate() first to encode a signal.
+
+        Parameters
+        ----------
+        noise : int
+            Amount of noise to add (0 = clean).
+
+        Returns
+        -------
+        numpy.ndarray
+            Output image as uint8 array (out_h, out_w, bpp).
+        """
+        self._lib.crt_demodulate(self._crt, noise)
+        buf = self._ffi.buffer(self._out_buf, self._out_w * self._out_h * self._bpp)
+        out = np.frombuffer(buf, dtype=np.uint8).copy()
+        return out.reshape(self._out_h, self._out_w, self._bpp)
+
+    def get_analog_signal(self):
+        """Read the current analog NTSC signal buffer.
+
+        Returns the raw signal after modulate() has been called.
+        Values are signed chars roughly in the range -40 (sync) to +110 (white) IRE.
+
+        Returns
+        -------
+        numpy.ndarray
+            Signal as int8 array shaped (VRES, HRES).
+        """
+        hres, vres = _SIGNAL_DIMS[self._system]
+        buf = self._ffi.buffer(self._crt.analog, hres * vres)
+        signal = np.frombuffer(buf, dtype=np.int8).copy()
+        return signal.reshape(vres, hres)
 
     def process(
         self,
@@ -268,64 +442,16 @@ class CRT:
         numpy.ndarray
             Output image as uint8 array (out_h, out_w, bpp).
         """
-        image = np.ascontiguousarray(image)
+        ntsc, _img_ref = self._make_ntsc_settings(
+            image, hue, raw, as_color, in_format,
+            dot_crawl_offset, do_aberration, 0, 0,
+            xoffset, yoffset,
+        )
         sys = self._system
 
-        # Create NTSC_SETTINGS
-        ntsc = self._ffi.new("struct NTSC_SETTINGS *")
-        # Zero out the struct (important for internal state fields)
-        self._ffi.buffer(ntsc)[:] = b"\x00" * self._ffi.sizeof("struct NTSC_SETTINGS")
-
-        # Set image data
-        if sys in _PALETTE_SYSTEMS:
-            if image.dtype != np.uint16:
-                image = image.astype(np.uint16)
-            data_ptr = self._ffi.cast(
-                "const unsigned short *",
-                self._ffi.from_buffer(image),
-            )
-            ntsc.data = data_ptr
-        else:
-            if image.dtype != np.uint8:
-                image = image.astype(np.uint8)
-            # Ensure 4-channel for BGRA format or determine from shape
-            data_ptr = self._ffi.cast(
-                "const unsigned char *",
-                self._ffi.from_buffer(image),
-            )
-            ntsc.data = data_ptr
-
-        # Dimensions
-        if image.ndim == 3:
-            h, w = image.shape[0], image.shape[1]
-        elif image.ndim == 2:
-            h, w = image.shape[0], image.shape[1]
-        else:
-            raise ValueError(f"Unexpected image shape: {image.shape}")
-
-        ntsc.w = w
-        ntsc.h = h
-        ntsc.hue = hue % 360
-        ntsc.xoffset = xoffset
-        ntsc.yoffset = yoffset
-
-        # System-specific fields
-        if sys in _FORMAT_SYSTEMS:
-            ntsc.format = in_format
-        if sys in _RAW_SYSTEMS:
-            ntsc.raw = int(raw)
-        if sys in _AS_COLOR_SYSTEMS:
-            ntsc.as_color = int(as_color)
-        if sys in _DOT_CRAWL_SYSTEMS:
-            ntsc.dot_crawl_offset = dot_crawl_offset
-        if sys in _ABERRATION_SYSTEMS:
-            ntsc.do_aberration = int(do_aberration)
-
-        # Interlace fields
         field = 0
         frame = 0
 
-        # Accumulate frames
         for i in range(num_frames):
             if sys in _FIELD_FRAME_SYSTEMS:
                 ntsc.field = field
@@ -343,7 +469,6 @@ class CRT:
                     if sys in _FIELD_FRAME_SYSTEMS:
                         ntsc.frame = frame
 
-        # Copy output to numpy
         buf = self._ffi.buffer(self._out_buf, self._out_w * self._out_h * self._bpp)
         out = np.frombuffer(buf, dtype=np.uint8).copy()
         return out.reshape(self._out_h, self._out_w, self._bpp)

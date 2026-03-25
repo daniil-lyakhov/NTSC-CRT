@@ -30,6 +30,8 @@ from the C library is used — images are passed in and out as numpy arrays.
    - [Monochrome TV](#monochrome-tv)
    - [Different Systems Side by Side](#different-systems-side-by-side)
    - [NES Pixel Data](#nes-pixel-data)
+   - [Inspecting the Analog Signal](#inspecting-the-analog-signal)
+   - [Manual Modulate / Demodulate Loop](#manual-modulate--demodulate-loop)
 9. [Parameter Tuning Guide](#parameter-tuning-guide)
 10. [Troubleshooting](#troubleshooting)
 
@@ -47,12 +49,12 @@ from the C library is used — images are passed in and out as numpy arrays.
 
 ```bash
 # 1. Create and activate a virtual environment
-python3 -m venv venv
-source venv/bin/activate       # Linux/macOS
-# venv\Scripts\activate        # Windows
+python3 -m venv env
+source env/bin/activate       # Linux/macOS
+# env\Scripts\activate        # Windows
 
 # 2. Install Python dependencies
-pip install cffi numpy setuptools
+pip install -r requirements.txt
 
 # 3. Build all system extensions
 cd python
@@ -184,6 +186,8 @@ They can be changed at any time between `process()` calls.
 | Property       | Type   | Range / Values          | Description                                        |
 |----------------|--------|-------------------------|----------------------------------------------------|
 | `system`       | `str`  | *(read-only)*           | The system variant name                            |
+| `signal_hres`  | `int`  | *(read-only)*           | Analog signal horizontal resolution (samples/line) |
+| `signal_vres`  | `int`  | *(read-only)*           | Analog signal vertical resolution (lines)          |
 | `hue`          | `int`  | `-360` to `360`         | Color hue rotation in degrees                      |
 | `brightness`   | `int`  | `-∞` to `+∞`            | Brightness offset                                  |
 | `contrast`     | `int`  | `0` to `+∞`             | Contrast multiplier                                |
@@ -193,6 +197,18 @@ They can be changed at any time between `process()` calls.
 | `scanlines`    | `bool` | `True` / `False`        | Add visible gaps between scan lines                |
 | `blend`        | `bool` | `True` / `False`        | Blend new field onto previous image                |
 | `v_fac`        | `int`  | `0` to `+∞`             | Vertical stretch factor                            |
+
+##### Signal dimensions by system
+
+| System     | `signal_hres` | `signal_vres` | Total samples |
+|------------|---------------|---------------|---------------|
+| `ntsc`     | 910           | 262           | 238,420       |
+| `nes`      | 909           | 262           | 238,158       |
+| `pv1k`     | 1920          | 262           | 502,840       |
+| `snes`     | 909           | 262           | 238,158       |
+| `template` | 910           | 262           | 238,420       |
+| `ntscvhs`  | 910           | 262           | 238,420       |
+| `nesrgb`   | 909           | 262           | 238,158       |
 
 ```python
 crt = CRT("ntsc", 640, 480)
@@ -290,6 +306,89 @@ crt.resize(1920, 1080)
 
 ---
 
+##### `modulate()`
+
+```python
+crt.modulate(
+    image,
+    hue=0,
+    raw=False,
+    as_color=True,
+    in_format=PIX_FORMAT_BGRA,
+    dot_crawl_offset=0,
+    do_aberration=False,
+    field=0,
+    frame=0,
+    xoffset=0,
+    yoffset=0,
+)
+```
+
+Encode an image into the internal analog NTSC signal buffer. This is the
+first half of the processing pipeline. After calling this, you can inspect
+the raw signal with `get_analog_signal()` or decode it with `demodulate()`.
+
+**Parameters:**
+
+| Parameter          | Type             | Default          | Description                                     |
+|--------------------|------------------|------------------|-------------------------------------------------|
+| `image`            | `numpy.ndarray`  | *(required)*     | Input image (same format rules as `process()`)  |
+| `hue`              | `int`            | `0`              | Artifact color hue offset (0-359)               |
+| `raw`              | `bool`           | `False`          | Don't scale input to fit                        |
+| `as_color`         | `bool`           | `True`           | Color / monochrome encoding                     |
+| `in_format`        | `int`            | `PIX_FORMAT_BGRA`| Input pixel format                              |
+| `dot_crawl_offset` | `int`            | `0`              | Dot crawl phase (system-dependent)              |
+| `do_aberration`    | `bool`           | `False`          | VHS aberration (ntscvhs only)                   |
+| `field`            | `int`            | `0`              | `0` = even field, `1` = odd field               |
+| `frame`            | `int`            | `0`              | `0` = even frame, `1` = odd frame               |
+| `xoffset`          | `int`            | `0`              | Horizontal offset in samples                    |
+| `yoffset`          | `int`            | `0`              | Vertical offset in lines                        |
+
+**Returns:** None
+
+---
+
+##### `demodulate()`
+
+```python
+output = crt.demodulate(noise=24)
+```
+
+Decode the analog NTSC signal (written by a prior `modulate()` call) back
+into an RGB output image.
+
+| Parameter | Type  | Default | Description                      |
+|-----------|-------|---------|----------------------------------|
+| `noise`   | `int` | `24`    | Signal noise amount (0 = clean)  |
+
+**Returns:** `numpy.ndarray` — output image as `uint8` array `(out_h, out_w, bpp)`.
+
+---
+
+##### `get_analog_signal()`
+
+```python
+signal = crt.get_analog_signal()
+```
+
+Read the current analog NTSC signal buffer. Call after `modulate()` to
+inspect the encoded signal before decoding.
+
+Values are signed 8-bit integers roughly in the range:
+- **-40** (sync tip)
+- **0** (blanking level)
+- **7** (black level, for most systems)
+- **100** (white level)
+- **110** (peak, some systems)
+
+**Returns:** `numpy.ndarray` — `int8` array shaped `(signal_vres, signal_hres)`.
+
+Each row is one scan line of the composite signal. The signal contains:
+- Front porch, sync pulse, breezeway, color burst, back porch (horizontal blanking)
+- Active video region with encoded luma + chroma
+
+---
+
 ##### `reset()`
 
 ```python
@@ -380,21 +479,27 @@ Understanding the internal pipeline helps with parameter tuning:
 Input Image (numpy array)
         │
         ▼
-┌─────────────────┐
-│  crt_modulate()  │  Encode: RGB pixels → analog NTSC signal
-│                  │  (writes to crt.analog[] internal buffer)
-└────────┬────────┘
+┌──────────────────┐
+│  crt.modulate()  │  Encode: RGB pixels → analog NTSC signal
+│                  │  (writes to internal analog[] buffer)
+└────────┬─────────┘
+         │
+         ├──→ crt.get_analog_signal()   ← inspect raw signal here
          │
          ▼
-┌─────────────────┐
-│ crt_demodulate() │  Decode: analog signal → RGB output
-│                  │  (reads crt.analog[], writes to output buffer)
+┌──────────────────┐
+│ crt.demodulate() │  Decode: analog signal → RGB output
+│                  │  (reads analog[], writes to output buffer)
 │                  │  Applies: bandlimiting, sync, noise, scanlines
-└────────┬────────┘
+└────────┬─────────┘
          │
          ▼
    Output Image (numpy array)
 ```
+
+The `process()` method runs both steps together in a loop. You can also call
+`modulate()` and `demodulate()` individually to inspect or manipulate the
+intermediate analog signal.
 
 In **interlaced mode** (default), each `num_frames` iteration runs two passes:
 one for the even field and one for the odd field. With `blend=True`, both
@@ -538,6 +643,73 @@ output = crt.process(
     num_frames=4,
     dot_crawl_offset=0,
 )
+```
+
+### Inspecting the Analog Signal
+
+You can encode an image and read the raw NTSC waveform:
+
+```python
+import numpy as np
+import matplotlib.pyplot as plt
+from ntsc_crt import CRT, PIX_FORMAT_BGRA
+
+crt = CRT("ntsc", out_w=640, out_h=480)
+image = ...  # Your BGRA uint8 image
+
+# Encode only
+crt.modulate(image)
+
+# Get the raw analog signal
+signal = crt.get_analog_signal()  # (262, 910) int8
+
+# Plot a single scan line (e.g. line 130, middle of screen)
+plt.figure(figsize=(14, 4))
+plt.plot(signal[130], linewidth=0.5)
+plt.axhline(y=0, color='gray', linestyle='--', label='Blanking')
+plt.axhline(y=-40, color='red', linestyle='--', label='Sync')
+plt.axhline(y=100, color='green', linestyle='--', label='White')
+plt.xlabel('Sample')
+plt.ylabel('IRE (int8)')
+plt.title('NTSC Composite Signal — Line 130')
+plt.legend()
+plt.tight_layout()
+plt.savefig('signal_line.png')
+
+# Visualize the full signal as an image
+plt.figure(figsize=(12, 8))
+plt.imshow(signal, aspect='auto', cmap='gray', vmin=-40, vmax=110)
+plt.xlabel('Sample (horizontal)')
+plt.ylabel('Line (vertical)')
+plt.title('Full NTSC Analog Signal')
+plt.colorbar(label='IRE')
+plt.tight_layout()
+plt.savefig('signal_full.png')
+
+# Then decode
+output = crt.demodulate(noise=24)
+```
+
+### Manual Modulate / Demodulate Loop
+
+For full control over field/frame interlacing:
+
+```python
+from ntsc_crt import CRT, PIX_FORMAT_BGRA
+
+crt = CRT("ntsc", out_w=640, out_h=480)
+crt.blend = True
+crt.scanlines = True
+
+image = ...  # BGRA uint8 image
+
+# Manually run 2 interlaced frames (4 fields)
+for frame in range(2):
+    for field in range(2):
+        crt.modulate(image, field=field, frame=frame)
+        output = crt.demodulate(noise=24)
+
+# output now has the accumulated result
 ```
 
 ---
