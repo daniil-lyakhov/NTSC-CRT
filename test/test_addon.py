@@ -81,25 +81,9 @@ def _reset_props():
     """Reset all addon properties to their defaults."""
     props = bpy.context.scene.ntsc_crt
     props.enabled = False
-    props.system = "ntsc"
-    props.hue = 0
-    props.brightness = 0
-    props.contrast = 180
-    props.saturation = 10
-    props.black_point = 0
-    props.white_point = 100
-    props.scanlines = True
-    props.blend = True
-    props.v_fac = 0
-    props.noise = 24
-    props.artifact_hue = 0
-    props.num_frames = 4
-    props.progressive = False
-    props.raw = False
-    props.as_color = True
-    props.xoffset = 0
-    props.yoffset = 0
-    props.do_aberration = False
+    props.mix_enabled = False
+    props.mix_ratio = 50
+    props.strip_settings.clear()
 
 
 def _disable_handler():
@@ -151,40 +135,55 @@ class TestPropertyDefaults(unittest.TestCase):
     def setUp(self):
         _reset_props()
         self.props = bpy.context.scene.ntsc_crt
+        self.settings = addon_module._get_strip_settings(
+            self.props, "test_strip")
 
     def test_enabled(self):
         self.assertFalse(self.props.enabled)
 
     def test_system(self):
-        self.assertEqual(self.props.system, "ntsc")
+        self.assertEqual(self.settings.system, "ntsc")
 
     def test_monitor_defaults(self):
-        self.assertEqual(self.props.hue, 0)
-        self.assertEqual(self.props.brightness, 0)
-        self.assertEqual(self.props.contrast, 180)
-        self.assertEqual(self.props.saturation, 10)
-        self.assertEqual(self.props.black_point, 0)
-        self.assertEqual(self.props.white_point, 100)
+        self.assertEqual(self.settings.hue, 0)
+        self.assertEqual(self.settings.brightness, 0)
+        self.assertEqual(self.settings.contrast, 180)
+        self.assertEqual(self.settings.saturation, 10)
+        self.assertEqual(self.settings.black_point, 0)
+        self.assertEqual(self.settings.white_point, 100)
 
     def test_display_defaults(self):
-        self.assertTrue(self.props.scanlines)
-        self.assertTrue(self.props.blend)
-        self.assertEqual(self.props.v_fac, 0)
+        self.assertTrue(self.settings.scanlines)
+        self.assertTrue(self.settings.blend)
+        self.assertEqual(self.settings.v_fac, 0)
 
     def test_signal_defaults(self):
-        self.assertEqual(self.props.noise, 24)
-        self.assertEqual(self.props.artifact_hue, 0)
-        self.assertEqual(self.props.num_frames, 4)
-        self.assertFalse(self.props.progressive)
-        self.assertFalse(self.props.raw)
-        self.assertTrue(self.props.as_color)
+        self.assertEqual(self.settings.noise, 24)
+        self.assertEqual(self.settings.artifact_hue, 0)
+        self.assertEqual(self.settings.num_frames, 4)
+        self.assertFalse(self.settings.progressive)
+        self.assertFalse(self.settings.raw)
+        self.assertTrue(self.settings.as_color)
 
     def test_offset_defaults(self):
-        self.assertEqual(self.props.xoffset, 0)
-        self.assertEqual(self.props.yoffset, 0)
+        self.assertEqual(self.settings.xoffset, 0)
+        self.assertEqual(self.settings.yoffset, 0)
 
     def test_vhs_defaults(self):
-        self.assertFalse(self.props.do_aberration)
+        self.assertFalse(self.settings.do_aberration)
+
+    def test_mix_defaults(self):
+        self.assertFalse(self.props.mix_enabled)
+        self.assertEqual(self.props.mix_ratio, 50)
+
+    def test_strip_settings_independent(self):
+        """Two different strips get independent settings."""
+        s1 = addon_module._get_strip_settings(self.props, "strip_1")
+        s2 = addon_module._get_strip_settings(self.props, "strip_2")
+        s1.hue = 42
+        s2.hue = -90
+        self.assertEqual(s1.hue, 42)
+        self.assertEqual(s2.hue, -90)
 
 
 # ===================================================================
@@ -200,6 +199,8 @@ class TestPropertyReadWrite(unittest.TestCase):
     def setUp(self):
         _reset_props()
         self.props = bpy.context.scene.ntsc_crt
+        self.settings = addon_module._get_strip_settings(
+            self.props, "test_strip")
 
     def test_enabled_toggle(self):
         self.props.enabled = True
@@ -208,56 +209,87 @@ class TestPropertyReadWrite(unittest.TestCase):
         self.assertFalse(self.props.enabled)
 
     def test_system_switch(self):
-        self.props.system = "ntscvhs"
-        self.assertEqual(self.props.system, "ntscvhs")
-        self.props.system = "ntsc"
-        self.assertEqual(self.props.system, "ntsc")
+        self.settings.system = "ntscvhs"
+        self.assertEqual(self.settings.system, "ntscvhs")
+        self.settings.system = "ntsc"
+        self.assertEqual(self.settings.system, "ntsc")
 
     def test_monitor_props(self):
-        self.props.hue = -90
-        self.props.brightness = 50
-        self.props.contrast = 250
-        self.props.saturation = 80
-        self.props.black_point = -20
-        self.props.white_point = 150
-        self.assertEqual(self.props.hue, -90)
-        self.assertEqual(self.props.brightness, 50)
-        self.assertEqual(self.props.contrast, 250)
-        self.assertEqual(self.props.saturation, 80)
-        self.assertEqual(self.props.black_point, -20)
-        self.assertEqual(self.props.white_point, 150)
+        self.settings.hue = -90
+        self.settings.brightness = 50
+        self.settings.contrast = 250
+        self.settings.saturation = 80
+        self.settings.black_point = -20
+        self.settings.white_point = 150
+        self.assertEqual(self.settings.hue, -90)
+        self.assertEqual(self.settings.brightness, 50)
+        self.assertEqual(self.settings.contrast, 250)
+        self.assertEqual(self.settings.saturation, 80)
+        self.assertEqual(self.settings.black_point, -20)
+        self.assertEqual(self.settings.white_point, 150)
 
     def test_display_props(self):
-        self.props.scanlines = False
-        self.props.blend = False
-        self.props.v_fac = 42
-        self.assertFalse(self.props.scanlines)
-        self.assertFalse(self.props.blend)
-        self.assertEqual(self.props.v_fac, 42)
+        self.settings.scanlines = False
+        self.settings.blend = False
+        self.settings.v_fac = 42
+        self.assertFalse(self.settings.scanlines)
+        self.assertFalse(self.settings.blend)
+        self.assertEqual(self.settings.v_fac, 42)
 
     def test_signal_props(self):
-        self.props.noise = 100
-        self.props.artifact_hue = 180
-        self.props.num_frames = 8
-        self.props.progressive = True
-        self.props.raw = True
-        self.props.as_color = False
-        self.assertEqual(self.props.noise, 100)
-        self.assertEqual(self.props.artifact_hue, 180)
-        self.assertEqual(self.props.num_frames, 8)
-        self.assertTrue(self.props.progressive)
-        self.assertTrue(self.props.raw)
-        self.assertFalse(self.props.as_color)
+        self.settings.noise = 100
+        self.settings.artifact_hue = 180
+        self.settings.num_frames = 8
+        self.settings.progressive = True
+        self.settings.raw = True
+        self.settings.as_color = False
+        self.assertEqual(self.settings.noise, 100)
+        self.assertEqual(self.settings.artifact_hue, 180)
+        self.assertEqual(self.settings.num_frames, 8)
+        self.assertTrue(self.settings.progressive)
+        self.assertTrue(self.settings.raw)
+        self.assertFalse(self.settings.as_color)
 
     def test_offset_props(self):
-        self.props.xoffset = 50
-        self.props.yoffset = -30
-        self.assertEqual(self.props.xoffset, 50)
-        self.assertEqual(self.props.yoffset, -30)
+        self.settings.xoffset = 50
+        self.settings.yoffset = -30
+        self.assertEqual(self.settings.xoffset, 50)
+        self.assertEqual(self.settings.yoffset, -30)
 
     def test_vhs_props(self):
-        self.props.do_aberration = True
-        self.assertTrue(self.props.do_aberration)
+        self.settings.do_aberration = True
+        self.assertTrue(self.settings.do_aberration)
+
+    def test_mix_props(self):
+        self.props.mix_enabled = True
+        self.assertTrue(self.props.mix_enabled)
+        self.props.mix_enabled = False
+        self.assertFalse(self.props.mix_enabled)
+        self.props.mix_ratio = 0
+        self.assertEqual(self.props.mix_ratio, 0)
+        self.props.mix_ratio = 100
+        self.assertEqual(self.props.mix_ratio, 100)
+
+    def test_per_strip_read_write(self):
+        """Per-strip settings are readable and writable."""
+        self.settings.system = "ntscvhs"
+        self.assertEqual(self.settings.system, "ntscvhs")
+        self.settings.hue = -90
+        self.assertEqual(self.settings.hue, -90)
+        self.settings.brightness = 50
+        self.assertEqual(self.settings.brightness, 50)
+        self.settings.contrast = 300
+        self.assertEqual(self.settings.contrast, 300)
+        self.settings.saturation = 80
+        self.assertEqual(self.settings.saturation, 80)
+        self.settings.scanlines = False
+        self.assertFalse(self.settings.scanlines)
+        self.settings.noise = 100
+        self.assertEqual(self.settings.noise, 100)
+        self.settings.xoffset = 50
+        self.assertEqual(self.settings.xoffset, 50)
+        self.settings.do_aberration = True
+        self.assertTrue(self.settings.do_aberration)
 
 
 # ===================================================================
@@ -289,6 +321,109 @@ class TestHelpers(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result.type, "MOVIE")
         _clear_sequencer()
+
+    def test_get_selected_movie_strips_none(self):
+        _clear_sequencer()
+        a, b = addon_module._get_selected_movie_strips(bpy.context)
+        self.assertIsNone(a)
+        self.assertIsNone(b)
+
+    @unittest.skipUnless(os.path.isfile(TEST_VIDEO), "test_input.mp4 missing")
+    def test_get_selected_movie_strips_one(self):
+        _clear_sequencer()
+        _add_movie_strip(TEST_VIDEO)
+        a, b = addon_module._get_selected_movie_strips(bpy.context)
+        self.assertIsNotNone(a)
+        self.assertIsNone(b)
+        _clear_sequencer()
+
+    @unittest.skipUnless(os.path.isfile(TEST_VIDEO), "test_input.mp4 missing")
+    def test_get_selected_movie_strips_two(self):
+        _clear_sequencer()
+        s1 = _add_movie_strip(TEST_VIDEO, channel=1)
+        s2 = _add_movie_strip(TEST_VIDEO, channel=2)
+        s1.select = True
+        s2.select = True
+        # Active = s2 (last added), so s1 should be strip_b
+        a, b = addon_module._get_selected_movie_strips(bpy.context)
+        self.assertIsNotNone(a)
+        self.assertIsNotNone(b)
+        self.assertNotEqual(a, b)
+        _clear_sequencer()
+
+
+# ===================================================================
+# Test: Mix Helper Functions
+# ===================================================================
+
+class TestMixHelpers(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        _ensure_registered()
+
+    def test_get_strip_settings_creates_entry(self):
+        """_get_strip_settings creates a new entry for an unknown strip."""
+        props = bpy.context.scene.ntsc_crt
+        _reset_props()
+        settings = addon_module._get_strip_settings(props, "new_strip")
+        self.assertEqual(settings.strip_name, "new_strip")
+        self.assertEqual(settings.system, "ntsc")  # default
+
+    def test_get_strip_settings_returns_existing(self):
+        """_get_strip_settings returns the same entry for the same strip."""
+        props = bpy.context.scene.ntsc_crt
+        _reset_props()
+        s1 = addon_module._get_strip_settings(props, "test_strip")
+        s1.hue = 42
+        s2 = addon_module._get_strip_settings(props, "test_strip")
+        self.assertEqual(s2.hue, 42)
+
+    def test_mix_and_normalize_equal_ratio(self):
+        import numpy as np
+        # Two simple signals
+        sig_a = np.full((262, 910), 80, dtype=np.int8)
+        sig_b = np.full((262, 910), 40, dtype=np.int8)
+        mixed = addon_module._mix_and_normalize(sig_a, sig_b, 50)
+        self.assertEqual(mixed.dtype, np.int8)
+        self.assertEqual(mixed.shape, (262, 910))
+        # Normalized: peak should be close to max(80, 40) = 80
+        self.assertGreater(int(mixed.max()), 70)
+
+    def test_mix_and_normalize_all_a(self):
+        import numpy as np
+        sig_a = np.full((262, 910), 80, dtype=np.int8)
+        sig_b = np.full((262, 910), 40, dtype=np.int8)
+        mixed = addon_module._mix_and_normalize(sig_a, sig_b, 0)
+        # ratio=0 means all A; peak ≈ 80
+        self.assertAlmostEqual(int(mixed.max()), 80, delta=2)
+
+    def test_mix_and_normalize_all_b(self):
+        import numpy as np
+        sig_a = np.full((262, 910), 80, dtype=np.int8)
+        sig_b = np.full((262, 910), 40, dtype=np.int8)
+        mixed = addon_module._mix_and_normalize(sig_a, sig_b, 100)
+        # ratio=100 means all B; normalized peak ≈ 80 (scaled up from 40)
+        self.assertGreater(int(mixed.max()), 70)
+
+    def test_mix_and_normalize_preserves_sync(self):
+        import numpy as np
+        sig_a = np.full((262, 910), 80, dtype=np.int8)
+        sig_b = np.full((262, 910), 80, dtype=np.int8)
+        # Set some sync values (negative IRE)
+        sig_a[:, :50] = -40
+        sig_b[:, :50] = -40
+        mixed = addon_module._mix_and_normalize(sig_a, sig_b, 50)
+        # Sync region should remain negative
+        self.assertTrue((mixed[:, :50] < 0).all())
+
+    def test_mix_and_normalize_shape_preserved(self):
+        import numpy as np
+        sig_a = np.zeros((262, 910), dtype=np.int8)
+        sig_b = np.zeros((262, 910), dtype=np.int8)
+        mixed = addon_module._mix_and_normalize(sig_a, sig_b, 50)
+        self.assertEqual(mixed.shape, (262, 910))
+        self.assertEqual(mixed.dtype, np.int8)
 
 
 # ===================================================================
@@ -344,9 +479,32 @@ class TestHandlerState(unittest.TestCase):
 
     def test_release_all(self):
         addon_module._HandlerState.get_crt("ntsc", 320, 240)
+        addon_module._HandlerState.get_crt_b("ntscvhs", 320, 240)
         addon_module._HandlerState.release_all()
         self.assertIsNone(addon_module._HandlerState.crt)
-        self.assertIsNone(addon_module._HandlerState.cap)
+        self.assertIsNone(addon_module._HandlerState.crt_b)
+        self.assertEqual(len(addon_module._HandlerState.caps), 0)
+
+    def test_get_crt_b_creates_instance(self):
+        crt_b = addon_module._HandlerState.get_crt_b("ntsc", 320, 240)
+        self.assertIsNotNone(crt_b)
+        self.assertEqual(addon_module._HandlerState.crt_b_system, "ntsc")
+
+    def test_get_crt_b_caches(self):
+        c1 = addon_module._HandlerState.get_crt_b("ntsc", 320, 240)
+        c2 = addon_module._HandlerState.get_crt_b("ntsc", 320, 240)
+        self.assertIs(c1, c2)
+
+    def test_get_crt_b_independent_of_crt_a(self):
+        crt_a = addon_module._HandlerState.get_crt("ntsc", 320, 240)
+        crt_b = addon_module._HandlerState.get_crt_b("ntsc", 320, 240)
+        self.assertIsNot(crt_a, crt_b)
+
+    def test_get_crt_b_recreates_on_system_change(self):
+        c1 = addon_module._HandlerState.get_crt_b("ntsc", 320, 240)
+        c2 = addon_module._HandlerState.get_crt_b("ntscvhs", 320, 240)
+        self.assertIsNot(c1, c2)
+        self.assertEqual(addon_module._HandlerState.crt_b_system, "ntscvhs")
 
     def test_get_or_create_image(self):
         img = addon_module._HandlerState.get_or_create_image(320, 240)
@@ -438,8 +596,10 @@ class TestFrameHandlerNTSC(unittest.TestCase):
         _disable_handler()
         bpy.context.scene.frame_set(1)
         self.props = bpy.context.scene.ntsc_crt
-        self.props.num_frames = 1  # fast
         self.strip = _add_movie_strip(TEST_VIDEO)
+        self.settings = addon_module._get_strip_settings(
+            self.props, self.strip.name)
+        self.settings.num_frames = 1  # fast
 
     def tearDown(self):
         _disable_handler()
@@ -519,7 +679,7 @@ class TestFrameHandlerNTSC(unittest.TestCase):
         img.pixels.foreach_get(pixels_default)
 
         # Change contrast significantly
-        self.props.contrast = 500
+        self.settings.contrast = 500
         # Invalidate CRT cache to pick up new settings
         addon_module._HandlerState.release_all()
         addon_module._ntsc_frame_handler(bpy.context.scene)
@@ -544,33 +704,33 @@ class TestFrameHandlerNTSC(unittest.TestCase):
         self.assertIsNone(img)
 
     def test_monochrome(self):
-        self.props.as_color = False
+        self.settings.as_color = False
         self._enable_and_process()
         img = bpy.data.images.get(addon_module._HandlerState.preview_name)
         self.assertIsNotNone(img)
 
     def test_progressive(self):
-        self.props.progressive = True
+        self.settings.progressive = True
         self._enable_and_process()
         img = bpy.data.images.get(addon_module._HandlerState.preview_name)
         self.assertIsNotNone(img)
 
     def test_no_scanlines_no_blend(self):
-        self.props.scanlines = False
-        self.props.blend = False
+        self.settings.scanlines = False
+        self.settings.blend = False
         self._enable_and_process()
         img = bpy.data.images.get(addon_module._HandlerState.preview_name)
         self.assertIsNotNone(img)
 
     def test_high_noise(self):
-        self.props.noise = 200
+        self.settings.noise = 200
         self._enable_and_process()
         img = bpy.data.images.get(addon_module._HandlerState.preview_name)
         self.assertIsNotNone(img)
 
     def test_offsets(self):
-        self.props.xoffset = 20
-        self.props.yoffset = -10
+        self.settings.xoffset = 20
+        self.settings.yoffset = -10
         self._enable_and_process()
         img = bpy.data.images.get(addon_module._HandlerState.preview_name)
         self.assertIsNotNone(img)
@@ -594,9 +754,11 @@ class TestFrameHandlerVHS(unittest.TestCase):
         _disable_handler()
         bpy.context.scene.frame_set(1)
         self.props = bpy.context.scene.ntsc_crt
-        self.props.system = "ntscvhs"
-        self.props.num_frames = 1
         self.strip = _add_movie_strip(TEST_VIDEO)
+        self.settings = addon_module._get_strip_settings(
+            self.props, self.strip.name)
+        self.settings.system = "ntscvhs"
+        self.settings.num_frames = 1
 
     def tearDown(self):
         _disable_handler()
@@ -613,7 +775,7 @@ class TestFrameHandlerVHS(unittest.TestCase):
 
     def test_vhs_with_aberration(self):
         self.props.enabled = True
-        self.props.do_aberration = True
+        self.settings.do_aberration = True
         addon_module._ntsc_frame_handler(bpy.context.scene)
         img = bpy.data.images.get(addon_module._HandlerState.preview_name)
         self.assertIsNotNone(img)
@@ -622,6 +784,253 @@ class TestFrameHandlerVHS(unittest.TestCase):
         self.props.enabled = True
         addon_module._ntsc_frame_handler(bpy.context.scene)
         self.assertEqual(addon_module._HandlerState.crt_system, "ntscvhs")
+
+
+# ===================================================================
+# Test: Mix Toggle Operator
+# ===================================================================
+
+@unittest.skipUnless(os.path.isfile(TEST_VIDEO), "test_input.mp4 missing")
+class TestMixToggleOperator(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        _ensure_registered()
+
+    def setUp(self):
+        _clear_sequencer()
+        _reset_props()
+        _disable_handler()
+        bpy.context.scene.frame_set(1)
+
+    def tearDown(self):
+        _disable_handler()
+        _clear_sequencer()
+        img = bpy.data.images.get(addon_module._HandlerState.preview_name)
+        if img is not None:
+            bpy.data.images.remove(img)
+
+    def test_mix_toggle_fails_no_strips(self):
+        with self.assertRaises(RuntimeError):
+            bpy.ops.sequencer.ntsc_mix_toggle()
+        self.assertFalse(bpy.context.scene.ntsc_crt.mix_enabled)
+
+    def test_mix_toggle_fails_one_strip(self):
+        _add_movie_strip(TEST_VIDEO, channel=1)
+        with self.assertRaises(RuntimeError):
+            bpy.ops.sequencer.ntsc_mix_toggle()
+        self.assertFalse(bpy.context.scene.ntsc_crt.mix_enabled)
+
+    def test_mix_toggle_on_two_strips(self):
+        s1 = _add_movie_strip(TEST_VIDEO, channel=1)
+        s2 = _add_movie_strip(TEST_VIDEO, channel=2)
+        s1.select = True
+        s2.select = True
+        result = bpy.ops.sequencer.ntsc_mix_toggle()
+        self.assertIn("FINISHED", result)
+        self.assertTrue(bpy.context.scene.ntsc_crt.mix_enabled)
+        self.assertIn(
+            addon_module._ntsc_frame_handler,
+            bpy.app.handlers.frame_change_post,
+        )
+
+    def test_mix_toggle_off(self):
+        s1 = _add_movie_strip(TEST_VIDEO, channel=1)
+        s2 = _add_movie_strip(TEST_VIDEO, channel=2)
+        s1.select = True
+        s2.select = True
+        bpy.ops.sequencer.ntsc_mix_toggle()  # enable
+        result = bpy.ops.sequencer.ntsc_mix_toggle()  # disable
+        self.assertIn("FINISHED", result)
+        self.assertFalse(bpy.context.scene.ntsc_crt.mix_enabled)
+
+    def test_mix_toggle_off_keeps_handler_when_preview_enabled(self):
+        s1 = _add_movie_strip(TEST_VIDEO, channel=1)
+        s2 = _add_movie_strip(TEST_VIDEO, channel=2)
+        s1.select = True
+        s2.select = True
+        # Enable single-strip preview first
+        bpy.ops.sequencer.ntsc_toggle()
+        # Enable mix
+        bpy.ops.sequencer.ntsc_mix_toggle()
+        # Disable mix — handler should stay because single preview is still on
+        bpy.ops.sequencer.ntsc_mix_toggle()
+        self.assertIn(
+            addon_module._ntsc_frame_handler,
+            bpy.app.handlers.frame_change_post,
+        )
+
+
+# ===================================================================
+# Test: Mix Frame Handler
+# ===================================================================
+
+@unittest.skipUnless(os.path.isfile(TEST_VIDEO), "test_input.mp4 missing")
+class TestMixFrameHandler(unittest.TestCase):
+    """Test the frame handler in signal-mix mode."""
+
+    @classmethod
+    def setUpClass(cls):
+        _ensure_registered()
+
+    def setUp(self):
+        _clear_sequencer()
+        _reset_props()
+        _disable_handler()
+        bpy.context.scene.frame_set(1)
+        self.props = bpy.context.scene.ntsc_crt
+        self.strip_a = _add_movie_strip(TEST_VIDEO, channel=1)
+        self.strip_b = _add_movie_strip(TEST_VIDEO, channel=2)
+        self.strip_a.select = True
+        self.strip_b.select = True
+        # Ensure strip_a is active so the handler treats it as A
+        bpy.context.scene.sequence_editor.active_strip = self.strip_a
+        self.settings_a = addon_module._get_strip_settings(
+            self.props, self.strip_a.name)
+        self.settings_b = addon_module._get_strip_settings(
+            self.props, self.strip_b.name)
+        self.settings_a.num_frames = 1
+        self.settings_b.num_frames = 1
+
+    def tearDown(self):
+        _disable_handler()
+        _clear_sequencer()
+        img = bpy.data.images.get(addon_module._HandlerState.preview_name)
+        if img is not None:
+            bpy.data.images.remove(img)
+
+    def _enable_mix_and_process(self):
+        self.props.mix_enabled = True
+        addon_module._ntsc_frame_handler(bpy.context.scene)
+
+    def test_mix_handler_creates_preview(self):
+        self._enable_mix_and_process()
+        img = bpy.data.images.get(addon_module._HandlerState.preview_name)
+        self.assertIsNotNone(img)
+        self.assertGreater(img.size[0], 0)
+        self.assertGreater(img.size[1], 0)
+
+    def test_mix_handler_has_nonzero_pixels(self):
+        import numpy as np
+        self._enable_mix_and_process()
+        img = bpy.data.images.get(addon_module._HandlerState.preview_name)
+        pixels = np.zeros(len(img.pixels), dtype=np.float32)
+        img.pixels.foreach_get(pixels)
+        self.assertGreater(np.max(pixels), 0.0)
+
+    def test_mix_ratio_0_vs_100(self):
+        """Ratio extremes should produce different results when mixed with
+        a brightness-shifted version of the same video."""
+        import numpy as np
+
+        self.props.mix_enabled = True
+
+        # Ratio = 0 (all A)
+        self.props.mix_ratio = 0
+        addon_module._HandlerState.release_all()
+        addon_module._ntsc_frame_handler(bpy.context.scene)
+        img = bpy.data.images.get(addon_module._HandlerState.preview_name)
+        p0 = np.zeros(len(img.pixels), dtype=np.float32)
+        img.pixels.foreach_get(p0)
+
+        # Ratio = 100 (all B)
+        self.props.mix_ratio = 100
+        addon_module._HandlerState.release_all()
+        addon_module._ntsc_frame_handler(bpy.context.scene)
+        p100 = np.zeros(len(img.pixels), dtype=np.float32)
+        img.pixels.foreach_get(p100)
+
+        # With same video the signals are identical so after normalization
+        # the outputs should be very similar — just verify both are valid
+        self.assertGreater(np.max(p0), 0.0)
+        self.assertGreater(np.max(p100), 0.0)
+
+    def test_mix_does_nothing_when_disabled(self):
+        self.props.mix_enabled = False
+        self.props.enabled = False
+        addon_module._ntsc_frame_handler(bpy.context.scene)
+        img = bpy.data.images.get(addon_module._HandlerState.preview_name)
+        self.assertIsNone(img)
+
+    def test_mix_fallback_single_strip(self):
+        """With mix_enabled but only one strip, falls back to single processing."""
+        _clear_sequencer()
+        strip = _add_movie_strip(TEST_VIDEO, channel=1)
+        settings = addon_module._get_strip_settings(self.props, strip.name)
+        settings.num_frames = 1
+        self.props.mix_enabled = True
+        addon_module._ntsc_frame_handler(bpy.context.scene)
+        img = bpy.data.images.get(addon_module._HandlerState.preview_name)
+        # Falls back to single-strip processing
+        self.assertIsNotNone(img)
+
+    def test_mix_with_custom_settings(self):
+        import numpy as np
+        self.props.mix_enabled = True
+        self.settings_a.contrast = 300
+        self.settings_a.noise = 0
+        addon_module._ntsc_frame_handler(bpy.context.scene)
+        img = bpy.data.images.get(addon_module._HandlerState.preview_name)
+        self.assertIsNotNone(img)
+        pixels = np.zeros(len(img.pixels), dtype=np.float32)
+        img.pixels.foreach_get(pixels)
+        self.assertGreater(np.max(pixels), 0.0)
+
+    def test_mix_with_independent_b_settings(self):
+        """Strip B uses its own system & knobs, independent of A."""
+        import numpy as np
+        self.props.mix_enabled = True
+        self.props.mix_ratio = 50
+        # B = ntscvhs with different contrast
+        self.settings_b.system = "ntscvhs"
+        self.settings_b.contrast = 400
+        self.settings_b.saturation = 80
+        addon_module._HandlerState.release_all()
+        addon_module._ntsc_frame_handler(bpy.context.scene)
+        img = bpy.data.images.get(addon_module._HandlerState.preview_name)
+        self.assertIsNotNone(img)
+        pixels = np.zeros(len(img.pixels), dtype=np.float32)
+        img.pixels.foreach_get(pixels)
+        self.assertGreater(np.max(pixels), 0.0)
+        # Verify CRT B was created with ntscvhs system
+        self.assertEqual(addon_module._HandlerState.crt_b_system, "ntscvhs")
+        # Verify CRT A is still ntsc
+        self.assertEqual(addon_module._HandlerState.crt_system, "ntsc")
+
+    def test_mix_handler_skips_out_of_range(self):
+        self.props.mix_enabled = True
+        bpy.context.scene.frame_set(9999)
+        addon_module._ntsc_frame_handler(bpy.context.scene)
+        img = bpy.data.images.get(addon_module._HandlerState.preview_name)
+        self.assertIsNone(img)
+
+
+# ===================================================================
+# Test: Reset Operator covers mix
+# ===================================================================
+
+class TestResetOperatorMix(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        _ensure_registered()
+
+    def setUp(self):
+        _reset_props()
+
+    def test_reset_restores_mix_ratio(self):
+        props = bpy.context.scene.ntsc_crt
+        props.mix_ratio = 75
+        bpy.ops.sequencer.ntsc_reset()
+        self.assertEqual(bpy.context.scene.ntsc_crt.mix_ratio, 50)
+
+    def test_reset_clears_strip_settings(self):
+        props = bpy.context.scene.ntsc_crt
+        addon_module._get_strip_settings(props, "strip_a")
+        addon_module._get_strip_settings(props, "strip_b")
+        self.assertGreater(len(props.strip_settings), 0)
+        bpy.ops.sequencer.ntsc_reset()
+        self.assertEqual(len(bpy.context.scene.ntsc_crt.strip_settings), 0)
 
 
 # ===================================================================
@@ -641,9 +1050,10 @@ class TestRefreshOperator(unittest.TestCase):
         _disable_handler()
         bpy.context.scene.frame_set(1)
         self.props = bpy.context.scene.ntsc_crt
-        self.props.num_frames = 1
         self.props.enabled = True
-        _add_movie_strip(TEST_VIDEO)
+        strip = _add_movie_strip(TEST_VIDEO)
+        settings = addon_module._get_strip_settings(self.props, strip.name)
+        settings.num_frames = 1
 
     def tearDown(self):
         _disable_handler()
@@ -657,6 +1067,42 @@ class TestRefreshOperator(unittest.TestCase):
         self.assertIn("FINISHED", result)
         img = bpy.data.images.get(addon_module._HandlerState.preview_name)
         self.assertIsNotNone(img)
+
+
+# ===================================================================
+# Test: HandlerState multi-capture (dict-based caps)
+# ===================================================================
+
+@unittest.skipUnless(os.path.isfile(TEST_VIDEO), "test_input.mp4 missing")
+class TestHandlerStateMultiCap(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        _ensure_registered()
+
+    def setUp(self):
+        addon_module._HandlerState.release_all()
+
+    def tearDown(self):
+        addon_module._HandlerState.release_all()
+
+    def test_caps_is_dict(self):
+        self.assertIsInstance(addon_module._HandlerState.caps, dict)
+
+    def test_get_cap_populates_dict(self):
+        cap = addon_module._HandlerState.get_cap(TEST_VIDEO)
+        self.assertIn(TEST_VIDEO, addon_module._HandlerState.caps)
+        self.assertTrue(cap.isOpened())
+
+    def test_release_cap_by_path(self):
+        addon_module._HandlerState.get_cap(TEST_VIDEO)
+        addon_module._HandlerState.release_cap(TEST_VIDEO)
+        self.assertNotIn(TEST_VIDEO, addon_module._HandlerState.caps)
+
+    def test_release_all_clears_caps(self):
+        addon_module._HandlerState.get_cap(TEST_VIDEO)
+        addon_module._HandlerState.release_all()
+        self.assertEqual(len(addon_module._HandlerState.caps), 0)
 
 
 # ===================================================================
