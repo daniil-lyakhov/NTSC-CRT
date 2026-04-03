@@ -83,6 +83,16 @@ def _reset_props():
     props.enabled = False
     props.mix_enabled = False
     props.mix_ratio = 50
+    props.hue = 0
+    props.brightness = 0
+    props.contrast = 180
+    props.saturation = 10
+    props.black_point = 0
+    props.white_point = 100
+    props.scanlines = True
+    props.blend = True
+    props.v_fac = 0
+    props.noise = 24
     props.strip_settings.clear()
 
 
@@ -145,20 +155,20 @@ class TestPropertyDefaults(unittest.TestCase):
         self.assertEqual(self.settings.system, "ntsc")
 
     def test_monitor_defaults(self):
-        self.assertEqual(self.settings.hue, 0)
-        self.assertEqual(self.settings.brightness, 0)
-        self.assertEqual(self.settings.contrast, 180)
-        self.assertEqual(self.settings.saturation, 10)
-        self.assertEqual(self.settings.black_point, 0)
-        self.assertEqual(self.settings.white_point, 100)
+        self.assertEqual(self.props.hue, 0)
+        self.assertEqual(self.props.brightness, 0)
+        self.assertEqual(self.props.contrast, 180)
+        self.assertEqual(self.props.saturation, 10)
+        self.assertEqual(self.props.black_point, 0)
+        self.assertEqual(self.props.white_point, 100)
 
     def test_display_defaults(self):
-        self.assertTrue(self.settings.scanlines)
-        self.assertTrue(self.settings.blend)
-        self.assertEqual(self.settings.v_fac, 0)
+        self.assertTrue(self.props.scanlines)
+        self.assertTrue(self.props.blend)
+        self.assertEqual(self.props.v_fac, 0)
 
     def test_signal_defaults(self):
-        self.assertEqual(self.settings.noise, 24)
+        self.assertEqual(self.props.noise, 24)
         self.assertEqual(self.settings.artifact_hue, 0)
         self.assertEqual(self.settings.num_frames, 4)
         self.assertFalse(self.settings.progressive)
@@ -180,10 +190,10 @@ class TestPropertyDefaults(unittest.TestCase):
         """Two different strips get independent settings."""
         s1 = addon_module._get_strip_settings(self.props, "strip_1")
         s2 = addon_module._get_strip_settings(self.props, "strip_2")
-        s1.hue = 42
-        s2.hue = -90
-        self.assertEqual(s1.hue, 42)
-        self.assertEqual(s2.hue, -90)
+        s1.artifact_hue = 42
+        s2.artifact_hue = 90
+        self.assertEqual(s1.artifact_hue, 42)
+        self.assertEqual(s2.artifact_hue, 90)
 
 
 # ===================================================================
@@ -215,35 +225,35 @@ class TestPropertyReadWrite(unittest.TestCase):
         self.assertEqual(self.settings.system, "ntsc")
 
     def test_monitor_props(self):
-        self.settings.hue = -90
-        self.settings.brightness = 50
-        self.settings.contrast = 250
-        self.settings.saturation = 80
-        self.settings.black_point = -20
-        self.settings.white_point = 150
-        self.assertEqual(self.settings.hue, -90)
-        self.assertEqual(self.settings.brightness, 50)
-        self.assertEqual(self.settings.contrast, 250)
-        self.assertEqual(self.settings.saturation, 80)
-        self.assertEqual(self.settings.black_point, -20)
-        self.assertEqual(self.settings.white_point, 150)
+        self.props.hue = -90
+        self.props.brightness = 50
+        self.props.contrast = 250
+        self.props.saturation = 80
+        self.props.black_point = -20
+        self.props.white_point = 150
+        self.assertEqual(self.props.hue, -90)
+        self.assertEqual(self.props.brightness, 50)
+        self.assertEqual(self.props.contrast, 250)
+        self.assertEqual(self.props.saturation, 80)
+        self.assertEqual(self.props.black_point, -20)
+        self.assertEqual(self.props.white_point, 150)
 
     def test_display_props(self):
-        self.settings.scanlines = False
-        self.settings.blend = False
-        self.settings.v_fac = 42
-        self.assertFalse(self.settings.scanlines)
-        self.assertFalse(self.settings.blend)
-        self.assertEqual(self.settings.v_fac, 42)
+        self.props.scanlines = False
+        self.props.blend = False
+        self.props.v_fac = 42
+        self.assertFalse(self.props.scanlines)
+        self.assertFalse(self.props.blend)
+        self.assertEqual(self.props.v_fac, 42)
 
     def test_signal_props(self):
-        self.settings.noise = 100
+        self.props.noise = 100
         self.settings.artifact_hue = 180
         self.settings.num_frames = 8
         self.settings.progressive = True
         self.settings.raw = True
         self.settings.as_color = False
-        self.assertEqual(self.settings.noise, 100)
+        self.assertEqual(self.props.noise, 100)
         self.assertEqual(self.settings.artifact_hue, 180)
         self.assertEqual(self.settings.num_frames, 8)
         self.assertTrue(self.settings.progressive)
@@ -274,18 +284,8 @@ class TestPropertyReadWrite(unittest.TestCase):
         """Per-strip settings are readable and writable."""
         self.settings.system = "ntscvhs"
         self.assertEqual(self.settings.system, "ntscvhs")
-        self.settings.hue = -90
-        self.assertEqual(self.settings.hue, -90)
-        self.settings.brightness = 50
-        self.assertEqual(self.settings.brightness, 50)
-        self.settings.contrast = 300
-        self.assertEqual(self.settings.contrast, 300)
-        self.settings.saturation = 80
-        self.assertEqual(self.settings.saturation, 80)
-        self.settings.scanlines = False
-        self.assertFalse(self.settings.scanlines)
-        self.settings.noise = 100
-        self.assertEqual(self.settings.noise, 100)
+        self.settings.artifact_hue = 180
+        self.assertEqual(self.settings.artifact_hue, 180)
         self.settings.xoffset = 50
         self.assertEqual(self.settings.xoffset, 50)
         self.settings.do_aberration = True
@@ -375,9 +375,9 @@ class TestMixHelpers(unittest.TestCase):
         props = bpy.context.scene.ntsc_crt
         _reset_props()
         s1 = addon_module._get_strip_settings(props, "test_strip")
-        s1.hue = 42
+        s1.artifact_hue = 42
         s2 = addon_module._get_strip_settings(props, "test_strip")
-        self.assertEqual(s2.hue, 42)
+        self.assertEqual(s2.artifact_hue, 42)
 
     def test_mix_and_normalize_equal_ratio(self):
         import numpy as np
@@ -678,7 +678,7 @@ class TestFrameHandlerNTSC(unittest.TestCase):
         img.pixels.foreach_get(pixels_default)
 
         # Change contrast significantly
-        self.settings.contrast = 500
+        self.props.contrast = 500
         # Invalidate CRT cache to pick up new settings
         addon_module._HandlerState.release_all()
         addon_module._ntsc_frame_handler(bpy.context.scene)
@@ -715,14 +715,14 @@ class TestFrameHandlerNTSC(unittest.TestCase):
         self.assertIsNotNone(img)
 
     def test_no_scanlines_no_blend(self):
-        self.settings.scanlines = False
-        self.settings.blend = False
+        self.props.scanlines = False
+        self.props.blend = False
         self._enable_and_process()
         img = bpy.data.images.get(addon_module._HandlerState.preview_name)
         self.assertIsNotNone(img)
 
     def test_high_noise(self):
-        self.settings.noise = 200
+        self.props.noise = 200
         self._enable_and_process()
         img = bpy.data.images.get(addon_module._HandlerState.preview_name)
         self.assertIsNotNone(img)
@@ -967,8 +967,8 @@ class TestMixFrameHandler(unittest.TestCase):
     def test_mix_with_custom_settings(self):
         import numpy as np
         self.props.mix_enabled = True
-        self.settings_a.contrast = 300
-        self.settings_a.noise = 0
+        self.props.contrast = 300
+        self.props.noise = 0
         addon_module._ntsc_frame_handler(bpy.context.scene)
         img = bpy.data.images.get(addon_module._HandlerState.preview_name)
         self.assertIsNotNone(img)
@@ -981,10 +981,9 @@ class TestMixFrameHandler(unittest.TestCase):
         import numpy as np
         self.props.mix_enabled = True
         self.props.mix_ratio = 50
-        # B = ntscvhs with different contrast
+        # B = ntscvhs with different artifact_hue
         self.settings_b.system = "ntscvhs"
-        self.settings_b.contrast = 400
-        self.settings_b.saturation = 80
+        self.settings_b.artifact_hue = 180
         addon_module._HandlerState.release_all()
         addon_module._ntsc_frame_handler(bpy.context.scene)
         img = bpy.data.images.get(addon_module._HandlerState.preview_name)
@@ -1009,7 +1008,7 @@ class TestMixFrameHandler(unittest.TestCase):
         self.assertIsNone(img)
 
     def test_mix_b_knobs_affect_output(self):
-        """Changing strip B's hue produces different output."""
+        """Changing strip B's artifact_hue produces different output."""
         import numpy as np
         self.props.mix_enabled = True
         self.props.mix_ratio = 100  # all B
@@ -1021,15 +1020,15 @@ class TestMixFrameHandler(unittest.TestCase):
         p_default = np.zeros(len(img.pixels), dtype=np.float32)
         img.pixels.foreach_get(p_default)
 
-        # Change B hue drastically
-        self.settings_b.hue = 180
+        # Change B artifact_hue drastically
+        self.settings_b.artifact_hue = 180
         addon_module._HandlerState.release_all()
         addon_module._ntsc_frame_handler(bpy.context.scene)
         p_changed = np.zeros(len(img.pixels), dtype=np.float32)
         img.pixels.foreach_get(p_changed)
 
         self.assertFalse(np.array_equal(p_default, p_changed),
-                         "Changing strip B hue should affect mix output")
+                         "Changing strip B artifact_hue should affect mix output")
 
 
 # ===================================================================
@@ -1058,6 +1057,19 @@ class TestResetOperatorMix(unittest.TestCase):
         self.assertGreater(len(props.strip_settings), 0)
         bpy.ops.sequencer.ntsc_reset()
         self.assertEqual(len(bpy.context.scene.ntsc_crt.strip_settings), 0)
+
+    def test_reset_restores_global_monitor(self):
+        props = bpy.context.scene.ntsc_crt
+        props.hue = 90
+        props.brightness = 50
+        props.contrast = 400
+        props.noise = 100
+        bpy.ops.sequencer.ntsc_reset()
+        props = bpy.context.scene.ntsc_crt
+        self.assertEqual(props.hue, 0)
+        self.assertEqual(props.brightness, 0)
+        self.assertEqual(props.contrast, 180)
+        self.assertEqual(props.noise, 24)
 
 
 # ===================================================================

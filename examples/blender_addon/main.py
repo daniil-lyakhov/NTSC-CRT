@@ -225,46 +225,6 @@ class NTSCStripSettings(PropertyGroup):
         ],
         default="ntsc", update=_on_strip_knob_update,
     )
-    hue: IntProperty(
-        name="Hue", description="Color hue rotation in degrees",
-        default=0, min=-360, max=360, update=_on_strip_knob_update,
-    )
-    brightness: IntProperty(
-        name="Brightness", description="Brightness offset",
-        default=0, min=-100, max=100, update=_on_strip_knob_update,
-    )
-    contrast: IntProperty(
-        name="Contrast", description="Contrast multiplier",
-        default=180, min=0, max=500, update=_on_strip_knob_update,
-    )
-    saturation: IntProperty(
-        name="Saturation", description="Color saturation multiplier",
-        default=10, min=0, max=200, update=_on_strip_knob_update,
-    )
-    black_point: IntProperty(
-        name="Black Point", description="Black level adjustment",
-        default=0, min=-50, max=50, update=_on_strip_knob_update,
-    )
-    white_point: IntProperty(
-        name="White Point", description="White level adjustment",
-        default=100, min=0, max=200, update=_on_strip_knob_update,
-    )
-    scanlines: BoolProperty(
-        name="Scanlines", description="Visible gaps between scan lines",
-        default=True, update=_on_strip_knob_update,
-    )
-    blend: BoolProperty(
-        name="Blend", description="Blend new field onto previous image",
-        default=True, update=_on_strip_knob_update,
-    )
-    v_fac: IntProperty(
-        name="V Stretch", description="Vertical stretch factor",
-        default=0, min=0, max=100, update=_on_strip_knob_update,
-    )
-    noise: IntProperty(
-        name="Noise", description="Signal noise amount (0 = clean)",
-        default=24, min=0, max=255, update=_on_strip_knob_update,
-    )
     artifact_hue: IntProperty(
         name="Artifact Hue", description="Artifact color hue offset (0-359)",
         default=0, min=0, max=359, update=_on_strip_knob_update,
@@ -328,6 +288,48 @@ class NTSCCRTProperties(PropertyGroup):
         default="",
     )
     strip_settings: CollectionProperty(type=NTSCStripSettings)
+
+    # --- Global monitor settings (applied during demodulation) ---
+    hue: IntProperty(
+        name="Hue", description="Color hue rotation in degrees",
+        default=0, min=-360, max=360, update=_on_global_knob_update,
+    )
+    brightness: IntProperty(
+        name="Brightness", description="Brightness offset",
+        default=0, min=-100, max=100, update=_on_global_knob_update,
+    )
+    contrast: IntProperty(
+        name="Contrast", description="Contrast multiplier",
+        default=180, min=0, max=500, update=_on_global_knob_update,
+    )
+    saturation: IntProperty(
+        name="Saturation", description="Color saturation multiplier",
+        default=10, min=0, max=200, update=_on_global_knob_update,
+    )
+    black_point: IntProperty(
+        name="Black Point", description="Black level adjustment",
+        default=0, min=-50, max=50, update=_on_global_knob_update,
+    )
+    white_point: IntProperty(
+        name="White Point", description="White level adjustment",
+        default=100, min=0, max=200, update=_on_global_knob_update,
+    )
+    scanlines: BoolProperty(
+        name="Scanlines", description="Visible gaps between scan lines",
+        default=True, update=_on_global_knob_update,
+    )
+    blend: BoolProperty(
+        name="Blend", description="Blend new field onto previous image",
+        default=True, update=_on_global_knob_update,
+    )
+    v_fac: IntProperty(
+        name="V Stretch", description="Vertical stretch factor",
+        default=0, min=0, max=100, update=_on_global_knob_update,
+    )
+    noise: IntProperty(
+        name="Noise", description="Signal noise amount (0 = clean)",
+        default=24, min=0, max=255, update=_on_global_knob_update,
+    )
 
 
 def _get_strip_settings(props, strip_name):
@@ -439,40 +441,39 @@ def _modulate_kwargs(props):
     )
 
 
-def _process_frame(crt, frame_bgra, settings):
+def _process_frame(crt, frame_bgra, strip_settings, props):
     """Apply settings and process a single frame through the CRT."""
-    _apply_monitor_settings(crt, settings)
+    _apply_monitor_settings(crt, props)
     return crt.process(
         frame_bgra,
-        noise=settings.noise,
-        hue=settings.artifact_hue,
-        num_frames=settings.num_frames,
-        progressive=settings.progressive,
-        raw=settings.raw,
-        as_color=settings.as_color,
+        noise=props.noise,
+        hue=strip_settings.artifact_hue,
+        num_frames=strip_settings.num_frames,
+        progressive=strip_settings.progressive,
+        raw=strip_settings.raw,
+        as_color=strip_settings.as_color,
         in_format=PIX_FORMAT_BGRA,
-        do_aberration=settings.do_aberration,
-        xoffset=settings.xoffset,
-        yoffset=settings.yoffset,
+        do_aberration=strip_settings.do_aberration,
+        xoffset=strip_settings.xoffset,
+        yoffset=strip_settings.yoffset,
     )
 
 
 def _process_mix_frame(crt_a, crt_b, frame_a, frame_b,
-                       settings_a, settings_b, mix_ratio):
+                       settings_a, settings_b, mix_ratio, props):
     """Modulate two frames, mix their analog signals, and demodulate."""
-    _apply_monitor_settings(crt_a, settings_a)
     mkw_a = _modulate_kwargs(settings_a)
     crt_a.modulate(frame_a, field=0, frame=0, **mkw_a)
     signal_a = crt_a.get_analog_signal()
 
-    _apply_monitor_settings(crt_b, settings_b)
     mkw_b = _modulate_kwargs(settings_b)
     crt_b.modulate(frame_b, field=0, frame=0, **mkw_b)
     signal_b = crt_b.get_analog_signal()
 
     mixed = _mix_and_normalize(signal_a, signal_b, mix_ratio)
+    _apply_monitor_settings(crt_a, props)
     crt_a.set_analog_signal(mixed)
-    return crt_a.demodulate(noise=settings_a.noise)
+    return crt_a.demodulate(noise=props.noise)
 
 
 def _read_strip_frame(strip, scene_frame):
@@ -492,7 +493,7 @@ def _single_strip_preview(strip, props, current):
 
     settings = _get_strip_settings(props, strip.name)
     crt = _HandlerState.get_crt_slot("a", settings.system, w, h)
-    output = _process_frame(crt, frame, settings)
+    output = _process_frame(crt, frame, settings, props)
     _write_output_to_image(output, w, h)
 
 
@@ -527,7 +528,8 @@ def _strip_mix_preview(sed, strip_a, props, current):
     crt_a = _HandlerState.get_crt_slot("a", settings_a.system, w, h)
     crt_b = _HandlerState.get_crt_slot("b", settings_b.system, w, h)
     output = _process_mix_frame(crt_a, crt_b, frame_a, frame_b,
-                                settings_a, settings_b, props.mix_ratio)
+                                settings_a, settings_b, props.mix_ratio,
+                                props)
     _write_output_to_image(output, w, h)
 
 
@@ -603,6 +605,17 @@ class SEQUENCER_OT_ntsc_reset(Operator):
         props = context.scene.ntsc_crt
         props.mix_ratio = 50
         props.strip_settings.clear()
+        # Reset global monitor settings
+        props.hue = 0
+        props.brightness = 0
+        props.contrast = 180
+        props.saturation = 10
+        props.black_point = 0
+        props.white_point = 100
+        props.scanlines = True
+        props.blend = True
+        props.v_fac = 0
+        props.noise = 24
         self.report({"INFO"}, "NTSC-CRT parameters reset")
         return {"FINISHED"}
 
@@ -714,7 +727,7 @@ class SEQUENCER_OT_ntsc_render(Operator):
 
                 frame_bgra = cv2.cvtColor(frame, cv2.COLOR_BGR2BGRA)
                 crt = _HandlerState.get_crt_slot("a", settings.system, w, h)
-                output = _process_frame(crt, frame_bgra, settings)
+                output = _process_frame(crt, frame_bgra, settings, props)
                 writer.write(cv2.cvtColor(output, cv2.COLOR_BGRA2BGR))
                 frame_idx += 1
                 wm.progress_update(frame_idx)
@@ -853,7 +866,7 @@ class SEQUENCER_OT_ntsc_mix_render(Operator):
                 crt_b = _HandlerState.get_crt_slot("b", settings_b.system, w, h)
                 output = _process_mix_frame(
                     crt_a, crt_b, fa, fb,
-                    settings_a, settings_b, props.mix_ratio,
+                    settings_a, settings_b, props.mix_ratio, props,
                 )
 
                 writer.write(cv2.cvtColor(output, cv2.COLOR_BGRA2BGR))
@@ -897,30 +910,13 @@ class SEQUENCER_OT_ntsc_mix_render(Operator):
 # ---------------------------------------------------------------------------
 
 def _draw_strip_knobs(layout, settings, label):
-    """Draw all CRT knobs for one NTSCStripSettings entry."""
+    """Draw per-strip CRT knobs for one NTSCStripSettings entry."""
     header = layout.box()
     header.label(text=label, icon="SEQ_STRIP_META")
     header.prop(settings, "system")
 
     box = header.box()
-    box.label(text="Monitor", icon="DESKTOP")
-    box.prop(settings, "hue", slider=True)
-    box.prop(settings, "brightness", slider=True)
-    box.prop(settings, "contrast", slider=True)
-    box.prop(settings, "saturation", slider=True)
-    box.prop(settings, "black_point", slider=True)
-    box.prop(settings, "white_point", slider=True)
-
-    box = header.box()
-    box.label(text="Display", icon="RESTRICT_VIEW_OFF")
-    row = box.row()
-    row.prop(settings, "scanlines")
-    row.prop(settings, "blend")
-    box.prop(settings, "v_fac", slider=True)
-
-    box = header.box()
     box.label(text="Signal", icon="FORCE_HARMONIC")
-    box.prop(settings, "noise", slider=True)
     box.prop(settings, "artifact_hue", slider=True)
     box.prop(settings, "num_frames")
     row = box.row()
@@ -938,6 +934,26 @@ def _draw_strip_knobs(layout, settings, label):
         box = header.box()
         box.label(text="VHS", icon="FILE_MOVIE")
         box.prop(settings, "do_aberration")
+
+
+def _draw_monitor_knobs(layout, props):
+    """Draw the global monitor / display / noise settings."""
+    box = layout.box()
+    box.label(text="Monitor", icon="DESKTOP")
+    box.prop(props, "hue", slider=True)
+    box.prop(props, "brightness", slider=True)
+    box.prop(props, "contrast", slider=True)
+    box.prop(props, "saturation", slider=True)
+    box.prop(props, "black_point", slider=True)
+    box.prop(props, "white_point", slider=True)
+
+    box = layout.box()
+    box.label(text="Display", icon="RESTRICT_VIEW_OFF")
+    row = box.row()
+    row.prop(props, "scanlines")
+    row.prop(props, "blend")
+    box.prop(props, "v_fac", slider=True)
+    box.prop(props, "noise", slider=True)
 
 
 class SEQUENCER_PT_ntsc_crt(Panel):
@@ -970,6 +986,10 @@ class SEQUENCER_PT_ntsc_crt(Panel):
                 text=f'View in Image Editor: "{_HandlerState.preview_name}"',
                 icon="IMAGE",
             )
+
+        # Global monitor settings
+        layout.separator()
+        _draw_monitor_knobs(layout, props)
 
         # Active strip settings
         if strip:
