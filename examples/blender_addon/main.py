@@ -718,7 +718,8 @@ def _process_frame_with_filters(crt, frame_bgra, strip_settings, props):
         output = crt.demodulate(**dkw)
 
         if not progressive:
-            crt.modulate(frame_bgra, field=field ^ 1, frame=frame, **mkw)
+            field ^= 1
+            crt.modulate(frame_bgra, field=field, frame=frame, **mkw)
             sig = crt.get_analog_signal()
             sig = _apply_signal_filters(sig, props)
             crt.set_analog_signal(sig)
@@ -761,10 +762,11 @@ def _process_mix_frame(crt_a, crt_b, frame_a, frame_b,
         output = crt_a.demodulate(**dkw)
 
         if not progressive:
-            crt_a.modulate(frame_a, field=field ^ 1, frame=frame, **mkw_a)
+            field ^= 1
+            crt_a.modulate(frame_a, field=field, frame=frame, **mkw_a)
             signal_a = crt_a.get_analog_signal()
 
-            crt_b.modulate(frame_b, field=field ^ 1, frame=frame, **mkw_b)
+            crt_b.modulate(frame_b, field=field, frame=frame, **mkw_b)
             signal_b = crt_b.get_analog_signal()
 
             mixed = _mix_and_normalize(signal_a, signal_b, mix_ratio)
