@@ -355,6 +355,12 @@ _OUTPUT_SIZE_PRESETS = {
     "half":     (320, 240),    # Quarter-frame capture card
 }
 
+# Input fps presets — "source" means keep the original frame rate
+_INPUT_FPS_PRESETS = {
+    "source":   None,          # pass-through
+    "ntsc":     30000 / 1001,  # ≈29.97 — authentic NTSC frame rate
+}
+
 MONITOR_KNOBS = [
     MonitorKnob("output_size", "Output Size",
                 "CRT output resolution preset. "
@@ -368,6 +374,19 @@ MONITOR_KNOBS = [
                     ("ntsc", "NTSC 640×480", "Standard NTSC square-pixel 4:3 (authentic)"),
                     ("dvd", "DVD 720×480", "DVD/DV NTSC resolution (non-square pixels)"),
                     ("half", "Half 320×240", "Quarter-frame for fast preview"),
+                ],
+                group="Output", group_icon="OUTPUT",
+                crt_attr="_skip"),
+    MonitorKnob("input_fps", "Input FPS",
+                "Convert source video to this frame rate before CRT "
+                "processing (render only). "
+                "Source = keep original frame rate. "
+                "NTSC 29.97 = authentic NTSC broadcast rate, 2× faster "
+                "for 60 fps sources",
+                prop_type="enum", default="source", slider=False,
+                items=[
+                    ("source", "Source", "Keep original frame rate"),
+                    ("ntsc", "NTSC 29.97", "Authentic NTSC frame rate (29.97 fps)"),
                 ],
                 group="Output", group_icon="OUTPUT",
                 crt_attr="_skip"),
@@ -887,6 +906,14 @@ def _crt_dimensions(props, src_w, src_h):
     return preset
 
 
+def _input_fps(props, source_fps):
+    """Return the target input fps based on the input_fps preset."""
+    preset = _INPUT_FPS_PRESETS.get(props.input_fps)
+    if preset is None:
+        return source_fps
+    return preset
+
+
 def _read_strip_frame(strip, scene_frame):
     """Read a BGRA frame from a strip. Returns (frame, w, h) or (None, 0, 0)."""
     path = bpy.path.abspath(strip.filepath)
@@ -1118,7 +1145,7 @@ class SEQUENCER_OT_ntsc_render(Operator):
             self.report({"ERROR"}, f"Cannot open video: {source_path}")
             return {"CANCELLED"}
 
-        fps = cap.get(cv2.CAP_PROP_FPS)
+        src_fps = cap.get(cv2.CAP_PROP_FPS)
         src_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         src_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
@@ -1128,9 +1155,17 @@ class SEQUENCER_OT_ntsc_render(Operator):
             return {"CANCELLED"}
 
         w, h = _crt_dimensions(props, src_w, src_h)
+        crt_fps = _input_fps(props, src_fps)
 
         src_start = strip.frame_offset_start
-        frames_to_process = strip.frame_final_duration
+        src_frame_count = strip.frame_final_duration
+
+        # When input fps differs, read all source frames but only process
+        # the ones that land on the target rate (nearest-neighbour drop).
+        if crt_fps != src_fps and src_fps > 0:
+            out_frame_count = int(src_frame_count * crt_fps / src_fps)
+        else:
+            out_frame_count = src_frame_count
 
         if src_start > 0:
             cap.set(cv2.CAP_PROP_POS_FRAMES, src_start)
@@ -1139,21 +1174,28 @@ class SEQUENCER_OT_ntsc_render(Operator):
                                 settings.system)
 
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        writer = cv2.VideoWriter(out_path, fourcc, fps, (w, h))
+        writer = cv2.VideoWriter(out_path, fourcc, crt_fps, (w, h))
         if not writer.isOpened():
             cap.release()
             self.report({"ERROR"}, f"Cannot create output: {out_path}")
             return {"CANCELLED"}
 
         wm = context.window_manager
-        wm.progress_begin(0, frames_to_process)
+        wm.progress_begin(0, out_frame_count)
 
         scene = context.scene
         original_frame = scene.frame_current
         frame_idx = 0
+        src_read = 0
+        next_src_needed = 0
         try:
-            while frame_idx < frames_to_process:
-                ret, frame = cap.read()
+            while frame_idx < out_frame_count:
+                # Advance through source frames to reach the next needed one
+                while src_read <= next_src_needed:
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    src_read += 1
                 if not ret:
                     break
 
@@ -1169,6 +1211,9 @@ class SEQUENCER_OT_ntsc_render(Operator):
                 writer.write(cv2.cvtColor(output, cv2.COLOR_BGRA2BGR))
                 frame_idx += 1
                 wm.progress_update(frame_idx)
+
+                # Compute which source frame is needed next
+                next_src_needed = int(frame_idx * src_fps / crt_fps)
         finally:
             scene.frame_set(original_frame)
             cap.release()
@@ -1190,6 +1235,20 @@ class SEQUENCER_OT_ntsc_render(Operator):
             channel=strip.channel + 1,
             frame_start=strip.frame_final_start,
         )
+
+        # When fps was converted, add a speed effect to stretch the strip
+        # so it matches the original timeline duration.
+        if crt_fps != src_fps and src_fps > 0:
+            speed = strips.new_effect(
+                name=f"NTSC Speed",
+                type="SPEED",
+                channel=new_strip.channel + 1,
+                frame_start=new_strip.frame_final_start,
+                seq1=new_strip,
+            )
+            speed.speed_factor = crt_fps / src_fps
+            speed.use_default_fade = False
+
         sed.active_strip = new_strip
 
         self.report(
@@ -1235,7 +1294,7 @@ class SEQUENCER_OT_ntsc_mix_render(Operator):
             self.report({"ERROR"}, "Cannot open one of the video files")
             return {"CANCELLED"}
 
-        fps = cap_a.get(cv2.CAP_PROP_FPS)
+        src_fps = cap_a.get(cv2.CAP_PROP_FPS)
         src_w = int(cap_a.get(cv2.CAP_PROP_FRAME_WIDTH))
         src_h = int(cap_a.get(cv2.CAP_PROP_FRAME_HEIGHT))
         if src_w <= 0 or src_h <= 0:
@@ -1245,6 +1304,7 @@ class SEQUENCER_OT_ntsc_mix_render(Operator):
             return {"CANCELLED"}
 
         w, h = _crt_dimensions(props, src_w, src_h)
+        crt_fps = _input_fps(props, src_fps)
 
         # Timeline range: overlapping portion of both strips
         start = max(strip_a.frame_final_start, strip_b.frame_final_start)
@@ -1254,13 +1314,18 @@ class SEQUENCER_OT_ntsc_mix_render(Operator):
             cap_b.release()
             self.report({"ERROR"}, "Strips do not overlap on the timeline")
             return {"CANCELLED"}
-        frames_to_process = end - start
+        src_frame_count = end - start
+
+        if crt_fps != src_fps and src_fps > 0:
+            out_frame_count = int(src_frame_count * crt_fps / src_fps)
+        else:
+            out_frame_count = src_frame_count
 
         out_path = _output_path(path_a, props.output_directory,
                                 settings_a.system, suffix="_mix")
 
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        writer = cv2.VideoWriter(out_path, fourcc, fps, (w, h))
+        writer = cv2.VideoWriter(out_path, fourcc, crt_fps, (w, h))
         if not writer.isOpened():
             cap_a.release()
             cap_b.release()
@@ -1268,14 +1333,21 @@ class SEQUENCER_OT_ntsc_mix_render(Operator):
             return {"CANCELLED"}
 
         wm = context.window_manager
-        wm.progress_begin(0, frames_to_process)
+        wm.progress_begin(0, out_frame_count)
 
         scene = context.scene
         original_frame = scene.frame_current
         frame_idx = 0
 
         try:
-            for timeline_frame in range(start, end):
+            for out_i in range(out_frame_count):
+                # Map output frame to source timeline frame
+                if crt_fps != src_fps and src_fps > 0:
+                    src_offset = int(out_i * src_fps / crt_fps)
+                else:
+                    src_offset = out_i
+                timeline_frame = start + src_offset
+
                 scene.frame_set(timeline_frame)
 
                 # Read frame A
@@ -1335,6 +1407,20 @@ class SEQUENCER_OT_ntsc_mix_render(Operator):
             channel=channel,
             frame_start=start,
         )
+
+        # When fps was converted, add a speed effect to stretch the strip
+        # so it matches the original timeline duration.
+        if crt_fps != src_fps and src_fps > 0:
+            speed = strips.new_effect(
+                name=f"NTSC Speed",
+                type="SPEED",
+                channel=new_strip.channel + 1,
+                frame_start=new_strip.frame_final_start,
+                seq1=new_strip,
+            )
+            speed.speed_factor = crt_fps / src_fps
+            speed.use_default_fade = False
+
         sed.active_strip = new_strip
 
         self.report(
