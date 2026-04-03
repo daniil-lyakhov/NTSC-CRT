@@ -331,6 +331,33 @@ class NTSCCRTProperties(PropertyGroup):
         default=24, min=0, max=255, update=_on_global_knob_update,
     )
 
+    # --- Signal filters (applied to analog signal between modulate/demodulate) ---
+    signal_filters: BoolProperty(
+        name="Signal Filters",
+        description="Enable signal-level filters (gain, fuzz, echo)",
+        default=False, update=_on_global_knob_update,
+    )
+    filter_gain: IntProperty(
+        name="Gain",
+        description="Signal gain as percentage (100 = unity, 200 = 2x)",
+        default=100, min=0, max=300, update=_on_global_knob_update,
+    )
+    filter_fuzz: IntProperty(
+        name="Fuzz",
+        description="Hard-clip distortion amount (0 = off, 100 = max)",
+        default=0, min=0, max=100, update=_on_global_knob_update,
+    )
+    filter_echo_delay: IntProperty(
+        name="Echo Delay",
+        description="Ghost/echo horizontal delay in samples (0 = off)",
+        default=0, min=0, max=200, update=_on_global_knob_update,
+    )
+    filter_echo_amount: IntProperty(
+        name="Echo Amount",
+        description="Ghost/echo signal amplitude percentage",
+        default=0, min=0, max=100, update=_on_global_knob_update,
+    )
+
 
 def _get_strip_settings(props, strip_name):
     """Return the per-strip CRT settings, creating an entry if needed."""
@@ -428,6 +455,46 @@ def _write_output_to_image(output, w, h):
     img.update()
 
 
+def _apply_signal_filters(signal, props):
+    """Apply gain, fuzz, and echo filters to a raw analog signal.
+
+    Parameters
+    ----------
+    signal : np.ndarray  int8 (VRES, HRES)
+    props  : NTSCCRTProperties
+
+    Returns
+    -------
+    np.ndarray  int8, same shape.
+    """
+    gain = props.filter_gain
+    fuzz = props.filter_fuzz
+    echo_delay = props.filter_echo_delay
+    echo_amount = props.filter_echo_amount
+
+    # Short-circuit when no filter is active
+    if gain == 100 and fuzz == 0 and (echo_delay == 0 or echo_amount == 0):
+        return signal
+
+    s = signal.astype(np.int16)
+
+    # Gain — scale entire signal
+    if gain != 100:
+        s = (s * gain) // 100
+
+    # Fuzz — hard clip at a threshold that shrinks with fuzz amount
+    if fuzz > 0:
+        threshold = max(1, int(127 * (1.0 - fuzz / 100.0)))
+        s = np.clip(s, -threshold, threshold)
+
+    # Echo / ghost — time-delayed copy mixed back in
+    if echo_delay > 0 and echo_amount > 0:
+        ghost = np.roll(s, echo_delay, axis=1)
+        s = s + (ghost * echo_amount) // 100
+
+    return np.clip(s, -128, 127).astype(np.int8)
+
+
 def _modulate_kwargs(props):
     """Build the keyword arguments shared by modulate() calls."""
     return dict(
@@ -459,6 +526,40 @@ def _process_frame(crt, frame_bgra, strip_settings, props):
     )
 
 
+def _process_frame_with_filters(crt, frame_bgra, strip_settings, props):
+    """Process a frame through modulate/filter/demodulate with num_frames accumulation.
+
+    Replicates the internal process() loop but inserts signal filters
+    between modulate and demodulate on every pass.
+    """
+    _apply_monitor_settings(crt, props)
+    mkw = _modulate_kwargs(strip_settings)
+    num_frames = strip_settings.num_frames
+    progressive = strip_settings.progressive
+
+    field = 0
+    frame = 0
+    output = None
+
+    for i in range(num_frames):
+        crt.modulate(frame_bgra, field=field, frame=frame, **mkw)
+        sig = crt.get_analog_signal()
+        sig = _apply_signal_filters(sig, props)
+        crt.set_analog_signal(sig)
+        output = crt.demodulate(noise=props.noise)
+
+        if not progressive:
+            crt.modulate(frame_bgra, field=field ^ 1, frame=frame, **mkw)
+            sig = crt.get_analog_signal()
+            sig = _apply_signal_filters(sig, props)
+            crt.set_analog_signal(sig)
+            output = crt.demodulate(noise=props.noise)
+            if (i & 1) == 0:
+                frame ^= 1
+
+    return output
+
+
 def _process_mix_frame(crt_a, crt_b, frame_a, frame_b,
                        settings_a, settings_b, mix_ratio, props):
     """Modulate two frames, mix their analog signals, and demodulate."""
@@ -471,6 +572,8 @@ def _process_mix_frame(crt_a, crt_b, frame_a, frame_b,
     signal_b = crt_b.get_analog_signal()
 
     mixed = _mix_and_normalize(signal_a, signal_b, mix_ratio)
+    if props.signal_filters:
+        mixed = _apply_signal_filters(mixed, props)
     _apply_monitor_settings(crt_a, props)
     crt_a.set_analog_signal(mixed)
     return crt_a.demodulate(noise=props.noise)
@@ -493,7 +596,10 @@ def _single_strip_preview(strip, props, current):
 
     settings = _get_strip_settings(props, strip.name)
     crt = _HandlerState.get_crt_slot("a", settings.system, w, h)
-    output = _process_frame(crt, frame, settings, props)
+    if props.signal_filters:
+        output = _process_frame_with_filters(crt, frame, settings, props)
+    else:
+        output = _process_frame(crt, frame, settings, props)
     _write_output_to_image(output, w, h)
 
 
@@ -616,6 +722,12 @@ class SEQUENCER_OT_ntsc_reset(Operator):
         props.blend = True
         props.v_fac = 0
         props.noise = 24
+        # Reset signal filter settings
+        props.signal_filters = False
+        props.filter_gain = 100
+        props.filter_fuzz = 0
+        props.filter_echo_delay = 0
+        props.filter_echo_amount = 0
         self.report({"INFO"}, "NTSC-CRT parameters reset")
         return {"FINISHED"}
 
@@ -727,7 +839,11 @@ class SEQUENCER_OT_ntsc_render(Operator):
 
                 frame_bgra = cv2.cvtColor(frame, cv2.COLOR_BGR2BGRA)
                 crt = _HandlerState.get_crt_slot("a", settings.system, w, h)
-                output = _process_frame(crt, frame_bgra, settings, props)
+                if props.signal_filters:
+                    output = _process_frame_with_filters(
+                        crt, frame_bgra, settings, props)
+                else:
+                    output = _process_frame(crt, frame_bgra, settings, props)
                 writer.write(cv2.cvtColor(output, cv2.COLOR_BGRA2BGR))
                 frame_idx += 1
                 wm.progress_update(frame_idx)
@@ -990,6 +1106,18 @@ class SEQUENCER_PT_ntsc_crt(Panel):
         # Global monitor settings
         layout.separator()
         _draw_monitor_knobs(layout, props)
+
+        # Signal Filters
+        layout.separator()
+        fbox = layout.box()
+        fbox.label(text="Signal Filters", icon="FORCE_CHARGE")
+        fbox.prop(props, "signal_filters")
+        col = fbox.column(align=True)
+        col.enabled = props.signal_filters
+        col.prop(props, "filter_gain", slider=True)
+        col.prop(props, "filter_fuzz", slider=True)
+        col.prop(props, "filter_echo_delay", slider=True)
+        col.prop(props, "filter_echo_amount", slider=True)
 
         # Active strip settings
         if strip:
