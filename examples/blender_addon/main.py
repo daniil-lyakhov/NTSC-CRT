@@ -285,7 +285,30 @@ def _apply_atmospheric(s, props):
 # Registries — add a new effect by adding ONE entry here
 # ---------------------------------------------------------------------------
 
+# Output size presets: (width, height) — "source" means use input video dimensions
+_OUTPUT_SIZE_PRESETS = {
+    "source":   None,          # pass-through
+    "ntsc":     (640, 480),    # NTSC standard square-pixel 4:3
+    "dvd":      (720, 480),    # DVD/DV NTSC (non-square pixels)
+    "half":     (320, 240),    # Quarter-frame capture card
+}
+
 MONITOR_KNOBS = [
+    MonitorKnob("output_size", "Output Size",
+                "CRT output resolution preset. "
+                "Source = same as input video. "
+                "NTSC 640×480 = authentic square-pixel broadcast. "
+                "DVD 720×480 = standard NTSC DVD. "
+                "Half 320×240 = fast quarter-frame",
+                prop_type="enum", default="ntsc", slider=False,
+                items=[
+                    ("source", "Source", "Same resolution as input video"),
+                    ("ntsc", "NTSC 640×480", "Standard NTSC square-pixel 4:3 (authentic)"),
+                    ("dvd", "DVD 720×480", "DVD/DV NTSC resolution (non-square pixels)"),
+                    ("half", "Half 320×240", "Quarter-frame for fast preview"),
+                ],
+                group="Output", group_icon="OUTPUT",
+                crt_attr="_skip"),
     MonitorKnob("hue", "Hue", "Color hue rotation in degrees",
                 default=0, min_val=-360, max_val=360,
                 group="Monitor", group_icon="DESKTOP"),
@@ -598,8 +621,9 @@ class _HandlerState:
 def _apply_monitor_settings(crt, props):
     """Copy the UI monitor knobs onto a CRT instance."""
     for k in MONITOR_KNOBS:
-        if not k.is_demod_kwarg:
-            setattr(crt, k.crt_attr or k.attr, getattr(props, k.attr))
+        if k.is_demod_kwarg or k.crt_attr == "_skip":
+            continue
+        setattr(crt, k.crt_attr or k.attr, getattr(props, k.attr))
 
 
 def _write_output_to_image(output, w, h):
@@ -754,6 +778,14 @@ def _process_mix_frame(crt_a, crt_b, frame_a, frame_b,
     return output
 
 
+def _crt_dimensions(props, src_w, src_h):
+    """Return (out_w, out_h) for CRT based on the output_size preset."""
+    preset = _OUTPUT_SIZE_PRESETS.get(props.output_size)
+    if preset is None:
+        return src_w, src_h
+    return preset
+
+
 def _read_strip_frame(strip, scene_frame):
     """Read a BGRA frame from a strip. Returns (frame, w, h) or (None, 0, 0)."""
     path = bpy.path.abspath(strip.filepath)
@@ -769,13 +801,14 @@ def _single_strip_preview(strip, props, current):
     if frame is None:
         return
 
+    ow, oh = _crt_dimensions(props, w, h)
     settings = _get_strip_settings(props, strip.name)
-    crt = _HandlerState.get_crt_slot("a", settings.system, w, h)
+    crt = _HandlerState.get_crt_slot("a", settings.system, ow, oh)
     if props.signal_filters:
         output = _process_frame_with_filters(crt, frame, settings, props)
     else:
         output = _process_frame(crt, frame, settings, props)
-    _write_output_to_image(output, w, h)
+    _write_output_to_image(output, ow, oh)
 
 
 def _strip_mix_preview(sed, strip_a, props, current):
@@ -799,6 +832,8 @@ def _strip_mix_preview(sed, strip_a, props, current):
     if frame_b is None:
         return
 
+    ow, oh = _crt_dimensions(props, w, h)
+
     # Resize B to match A if needed
     if (wb, hb) != (w, h):
         frame_b = cv2.resize(frame_b, (w, h),
@@ -806,12 +841,12 @@ def _strip_mix_preview(sed, strip_a, props, current):
 
     settings_a = _get_strip_settings(props, strip_a.name)
     settings_b = _get_strip_settings(props, strip_b.name)
-    crt_a = _HandlerState.get_crt_slot("a", settings_a.system, w, h)
-    crt_b = _HandlerState.get_crt_slot("b", settings_b.system, w, h)
+    crt_a = _HandlerState.get_crt_slot("a", settings_a.system, ow, oh)
+    crt_b = _HandlerState.get_crt_slot("b", settings_b.system, ow, oh)
     output = _process_mix_frame(crt_a, crt_b, frame_a, frame_b,
                                 settings_a, settings_b, props.mix_ratio,
                                 props)
-    _write_output_to_image(output, w, h)
+    _write_output_to_image(output, ow, oh)
 
 
 def _ntsc_frame_handler(scene):
@@ -964,13 +999,15 @@ class SEQUENCER_OT_ntsc_render(Operator):
             return {"CANCELLED"}
 
         fps = cap.get(cv2.CAP_PROP_FPS)
-        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        src_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        src_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-        if w <= 0 or h <= 0:
+        if src_w <= 0 or src_h <= 0:
             cap.release()
             self.report({"ERROR"}, "Cannot read video dimensions")
             return {"CANCELLED"}
+
+        w, h = _crt_dimensions(props, src_w, src_h)
 
         src_start = strip.frame_offset_start
         frames_to_process = strip.frame_final_duration
@@ -1079,13 +1116,15 @@ class SEQUENCER_OT_ntsc_mix_render(Operator):
             return {"CANCELLED"}
 
         fps = cap_a.get(cv2.CAP_PROP_FPS)
-        w = int(cap_a.get(cv2.CAP_PROP_FRAME_WIDTH))
-        h = int(cap_a.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        if w <= 0 or h <= 0:
+        src_w = int(cap_a.get(cv2.CAP_PROP_FRAME_WIDTH))
+        src_h = int(cap_a.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        if src_w <= 0 or src_h <= 0:
             cap_a.release()
             cap_b.release()
             self.report({"ERROR"}, "Cannot read video dimensions")
             return {"CANCELLED"}
+
+        w, h = _crt_dimensions(props, src_w, src_h)
 
         # Timeline range: overlapping portion of both strips
         start = max(strip_a.frame_final_start, strip_b.frame_final_start)
