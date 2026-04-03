@@ -1020,6 +1020,13 @@ class SEQUENCER_OT_ntsc_reset(Operator):
 
     def execute(self, context):
         props = context.scene.ntsc_crt
+        # Temporarily disable preview so property updates don't trigger
+        # expensive re-renders for every single knob reset.
+        was_enabled = props.enabled
+        was_mix = props.mix_enabled
+        props.enabled = False
+        props.mix_enabled = False
+
         props.mix_ratio = 50
         props.strip_settings.clear()
         # Reset all registry-driven properties to defaults
@@ -1031,6 +1038,16 @@ class SEQUENCER_OT_ntsc_reset(Operator):
                 setattr(props, f.toggle_attr, False)
             for p in f.params:
                 setattr(props, p.attr, p.default)
+        # Flush cached CRT instances so stale output buffers (used by blend)
+        # and internal sync state don't bleed through after a reset.
+        _HandlerState.release_all()
+
+        # Restore preview state and render one fresh frame
+        props.enabled = was_enabled
+        props.mix_enabled = was_mix
+        if props.enabled or props.mix_enabled:
+            _ntsc_frame_handler(context.scene)
+            _tag_image_editors()
         self.report({"INFO"}, "NTSC-CRT parameters reset")
         return {"FINISHED"}
 
