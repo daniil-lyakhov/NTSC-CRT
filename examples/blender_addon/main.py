@@ -70,15 +70,21 @@ def _get_strips(scene):
     return sed, strips
 
 
+def _get_active_movie_strip(scene):
+    """Return (sequence_editor, active_strip) if active strip is MOVIE, else (None, None)."""
+    sed = scene.sequence_editor
+    if sed is None:
+        return None, None
+    strip = getattr(sed, "active_strip", None)
+    if strip is None or strip.type != "MOVIE":
+        return None, None
+    return sed, strip
+
+
 def _active_movie_strip(context):
     """Return the active strip if it is a MOVIE strip, else None."""
-    sed = context.scene.sequence_editor
-    if sed is None:
-        return None
-    active = getattr(sed, "active_strip", None)
-    if active and active.type == "MOVIE":
-        return active
-    return None
+    _, strip = _get_active_movie_strip(context.scene)
+    return strip
 
 
 def _output_path(source_path, output_dir, system, suffix=""):
@@ -326,9 +332,9 @@ class NTSCCRTProperties(PropertyGroup):
 
 def _get_strip_settings(props, strip_name):
     """Return the per-strip CRT settings, creating an entry if needed."""
-    for item in props.strip_settings:
-        if item.strip_name == strip_name:
-            return item
+    item = _find_strip_settings(props, strip_name)
+    if item is not None:
+        return item
     item = props.strip_settings.add()
     item.strip_name = strip_name
     return item
@@ -348,42 +354,22 @@ def _find_strip_settings(props, strip_name):
 
 class _HandlerState:
     """Module-level cache for the frame change handler."""
-    crt = None
-    crt_system = None
-    crt_w = 0
-    crt_h = 0
-    crt_b = None       # Second CRT instance for mix channel B
-    crt_b_system = None
-    crt_b_w = 0
-    crt_b_h = 0
-    caps = {}          # filepath -> cv2.VideoCapture
+
+    _crts: dict[str, CRT] = {}          # slot key -> cached CRT instance
+    caps = {}                           # filepath -> cv2.VideoCapture
     preview_name = "NTSC Preview"
 
     @classmethod
-    def get_crt(cls, system, w, h):
-        if (cls.crt is None
-                or cls.crt_system != system
-                or cls.crt_w != w
-                or cls.crt_h != h):
-            cls.crt = CRT(system, out_w=w, out_h=h, out_format=PIX_FORMAT_BGRA)
-            cls.crt_system = system
-            cls.crt_w = w
-            cls.crt_h = h
-        return cls.crt
-
-    @classmethod
-    def get_crt_b(cls, system, w, h):
-        """Get or create the second CRT instance for mix channel B."""
-        if (cls.crt_b is None
-                or cls.crt_b_system != system
-                or cls.crt_b_w != w
-                or cls.crt_b_h != h):
-            cls.crt_b = CRT(system, out_w=w, out_h=h,
-                            out_format=PIX_FORMAT_BGRA)
-            cls.crt_b_system = system
-            cls.crt_b_w = w
-            cls.crt_b_h = h
-        return cls.crt_b
+    def get_crt_slot(cls, key, system, w, h):
+        cached: CRT = cls._crts.get(key)
+        if (cached is None
+                or cached.system != system
+                or cached.out_w != w
+                or cached.out_h != h):
+            crt = CRT(system, out_w=w, out_h=h, out_format=PIX_FORMAT_BGRA)
+            cls._crts[key] = crt
+            return crt
+        return cached
 
     @classmethod
     def get_cap(cls, filepath):
@@ -397,29 +383,26 @@ class _HandlerState:
             cap = cls.caps.pop(filepath, None)
             if cap is not None:
                 cap.release()
-        else:
-            for cap in cls.caps.values():
-                cap.release()
-            cls.caps.clear()
+            return
+        for cap in cls.caps.values():
+            cap.release()
+        cls.caps.clear()
 
     @classmethod
     def release_all(cls):
         cls.release_cap()
-        cls.crt = None
-        cls.crt_system = None
-        cls.crt_b = None
-        cls.crt_b_system = None
+        cls._crts.clear()
 
     @classmethod
     def get_or_create_image(cls, w, h):
         img = bpy.data.images.get(cls.preview_name)
-        if img is None or img.size[0] != w or img.size[1] != h:
-            if img is not None:
-                bpy.data.images.remove(img)
-            img = bpy.data.images.new(
-                cls.preview_name, width=w, height=h, alpha=True,
-            )
-        return img
+        if img is not None:
+            if img.size[0] == w and img.size[1] == h:
+                return img
+            bpy.data.images.remove(img)
+        return bpy.data.images.new(
+            cls.preview_name, width=w, height=h, alpha=True,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -428,15 +411,9 @@ class _HandlerState:
 
 def _apply_monitor_settings(crt, props):
     """Copy the UI monitor knobs onto a CRT instance."""
-    crt.hue = props.hue
-    crt.brightness = props.brightness
-    crt.contrast = props.contrast
-    crt.saturation = props.saturation
-    crt.black_point = props.black_point
-    crt.white_point = props.white_point
-    crt.scanlines = props.scanlines
-    crt.blend = props.blend
-    crt.v_fac = props.v_fac
+    for attr in ("hue", "brightness", "contrast", "saturation",
+                 "black_point", "white_point", "scanlines", "blend", "v_fac"):
+        setattr(crt, attr, getattr(props, attr))
 
 
 def _write_output_to_image(output, w, h):
@@ -462,6 +439,98 @@ def _modulate_kwargs(props):
     )
 
 
+def _process_frame(crt, frame_bgra, settings):
+    """Apply settings and process a single frame through the CRT."""
+    _apply_monitor_settings(crt, settings)
+    return crt.process(
+        frame_bgra,
+        noise=settings.noise,
+        hue=settings.artifact_hue,
+        num_frames=settings.num_frames,
+        progressive=settings.progressive,
+        raw=settings.raw,
+        as_color=settings.as_color,
+        in_format=PIX_FORMAT_BGRA,
+        do_aberration=settings.do_aberration,
+        xoffset=settings.xoffset,
+        yoffset=settings.yoffset,
+    )
+
+
+def _process_mix_frame(crt_a, crt_b, frame_a, frame_b,
+                       settings_a, settings_b, mix_ratio):
+    """Modulate two frames, mix their analog signals, and demodulate."""
+    _apply_monitor_settings(crt_a, settings_a)
+    mkw_a = _modulate_kwargs(settings_a)
+    crt_a.modulate(frame_a, field=0, frame=0, **mkw_a)
+    signal_a = crt_a.get_analog_signal()
+
+    _apply_monitor_settings(crt_b, settings_b)
+    mkw_b = _modulate_kwargs(settings_b)
+    crt_b.modulate(frame_b, field=0, frame=0, **mkw_b)
+    signal_b = crt_b.get_analog_signal()
+
+    mixed = _mix_and_normalize(signal_a, signal_b, mix_ratio)
+    crt_a.set_analog_signal(mixed)
+    return crt_a.demodulate(noise=settings_a.noise)
+
+
+def _read_strip_frame(strip, scene_frame):
+    """Read a BGRA frame from a strip. Returns (frame, w, h) or (None, 0, 0)."""
+    path = bpy.path.abspath(strip.filepath)
+    if not os.path.isfile(path):
+        return None, 0, 0
+    cap = _HandlerState.get_cap(path)
+    return _read_video_frame(cap, strip, scene_frame)
+
+
+def _single_strip_preview(strip, props, current):
+    """Process a single strip through NTSC-CRT and write to the preview image."""
+    frame, w, h = _read_strip_frame(strip, current)
+    if frame is None:
+        return
+
+    settings = _get_strip_settings(props, strip.name)
+    crt = _HandlerState.get_crt_slot("a", settings.system, w, h)
+    output = _process_frame(crt, frame, settings)
+    _write_output_to_image(output, w, h)
+
+
+def _strip_mix_preview(sed, strip_a, props, current):
+    """Attempt two-strip signal mix preview."""
+    frame_a, w, h = _read_strip_frame(strip_a, current)
+    if frame_a is None:
+        return
+
+    strips = getattr(sed, "strips", None) or getattr(sed, "sequences", None)
+    strip_b = None
+    if strips is not None:
+        for s in strips:
+            if s != strip_a and s.type == "MOVIE" and s.select:
+                strip_b = s
+                break
+
+    if strip_b is None:
+        return
+
+    frame_b, wb, hb = _read_strip_frame(strip_b, current)
+    if frame_b is None:
+        return
+
+    # Resize B to match A if needed
+    if (wb, hb) != (w, h):
+        frame_b = cv2.resize(frame_b, (w, h),
+                             interpolation=cv2.INTER_LINEAR)
+
+    settings_a = _get_strip_settings(props, strip_a.name)
+    settings_b = _get_strip_settings(props, strip_b.name)
+    crt_a = _HandlerState.get_crt_slot("a", settings_a.system, w, h)
+    crt_b = _HandlerState.get_crt_slot("b", settings_b.system, w, h)
+    output = _process_mix_frame(crt_a, crt_b, frame_a, frame_b,
+                                settings_a, settings_b, props.mix_ratio)
+    _write_output_to_image(output, w, h)
+
+
 def _ntsc_frame_handler(scene):
     """Process the active strip's current frame through NTSC-CRT.
 
@@ -473,98 +542,16 @@ def _ntsc_frame_handler(scene):
     if not props.enabled and not props.mix_enabled:
         return
 
-    sed = scene.sequence_editor
-    if sed is None:
-        return
-    strip_a = getattr(sed, "active_strip", None)
-    if strip_a is None or strip_a.type != "MOVIE":
+    sed, strip_a = _get_active_movie_strip(scene)
+    if strip_a is None:
         return
 
     current = scene.frame_current
 
-    # ---- Read frame A ----
-    path_a = bpy.path.abspath(strip_a.filepath)
-    if not os.path.isfile(path_a):
-        return
-    cap_a = _HandlerState.get_cap(path_a)
-    frame_a, w, h = _read_video_frame(cap_a, strip_a, current)
-    if frame_a is None:
-        return
-
-    settings_a = _get_strip_settings(props, strip_a.name)
-
-    # ---- Mix mode: modulate A & B, mix signals, demodulate ----
     if props.mix_enabled:
-        # Find strip B
-        strips = getattr(sed, "strips", None) or getattr(sed, "sequences", None)
-        strip_b = None
-        if strips is not None:
-            for s in strips:
-                if s != strip_a and s.type == "MOVIE" and s.select:
-                    strip_b = s
-                    break
-
-        if strip_b is not None:
-            path_b = bpy.path.abspath(strip_b.filepath)
-            if os.path.isfile(path_b):
-                cap_b = _HandlerState.get_cap(path_b)
-                frame_b, wb, hb = _read_video_frame(cap_b, strip_b, current)
-
-                if frame_b is not None:
-                    # Resize B to match A if needed
-                    if (wb, hb) != (w, h):
-                        frame_b = cv2.resize(frame_b, (w, h),
-                                             interpolation=cv2.INTER_LINEAR)
-
-                    settings_b = _get_strip_settings(props, strip_b.name)
-
-                    # CRT A — modulate with Strip A settings
-                    crt_a = _HandlerState.get_crt(settings_a.system, w, h)
-                    _apply_monitor_settings(crt_a, settings_a)
-                    mkw_a = _modulate_kwargs(settings_a)
-                    crt_a.modulate(frame_a, field=0, frame=0, **mkw_a)
-                    signal_a = crt_a.get_analog_signal()
-
-                    # CRT B — modulate with Strip B settings
-                    crt_b = _HandlerState.get_crt_b(settings_b.system, w, h)
-                    _apply_monitor_settings(crt_b, settings_b)
-                    mkw_b = _modulate_kwargs(settings_b)
-                    crt_b.modulate(frame_b, field=0, frame=0, **mkw_b)
-                    signal_b = crt_b.get_analog_signal()
-
-                    # Mix + normalize, demodulate through CRT A
-                    mixed = _mix_and_normalize(signal_a, signal_b,
-                                               props.mix_ratio)
-                    crt_a.set_analog_signal(mixed)
-                    output = crt_a.demodulate(noise=settings_a.noise)
-
-                    _write_output_to_image(output, w, h)
-                    return
-
-        # Fallback: mix enabled but no second strip – process A alone
-
-    # ---- Single-strip mode ----
-    if not props.enabled and not props.mix_enabled:
-        return
-
-    crt = _HandlerState.get_crt(settings_a.system, w, h)
-    _apply_monitor_settings(crt, settings_a)
-
-    output = crt.process(
-        frame_a,
-        noise=settings_a.noise,
-        hue=settings_a.artifact_hue,
-        num_frames=settings_a.num_frames,
-        progressive=settings_a.progressive,
-        raw=settings_a.raw,
-        as_color=settings_a.as_color,
-        in_format=PIX_FORMAT_BGRA,
-        do_aberration=settings_a.do_aberration,
-        xoffset=settings_a.xoffset,
-        yoffset=settings_a.yoffset,
-    )
-
-    _write_output_to_image(output, w, h)
+        _strip_mix_preview(sed, strip_a, props, current)
+    elif props.enabled:
+        _single_strip_preview(strip_a, props, current)
 
 
 # ---------------------------------------------------------------------------
@@ -704,9 +691,6 @@ class SEQUENCER_OT_ntsc_render(Operator):
         out_path = _output_path(source_path, props.output_directory,
                                 settings.system)
 
-        crt = None
-        prev_system = None
-
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         writer = cv2.VideoWriter(out_path, fourcc, fps, (w, h))
         if not writer.isOpened():
@@ -728,27 +712,9 @@ class SEQUENCER_OT_ntsc_render(Operator):
 
                 scene.frame_set(strip.frame_final_start + frame_idx)
 
-                if crt is None or settings.system != prev_system:
-                    crt = CRT(settings.system, out_w=w, out_h=h,
-                              out_format=PIX_FORMAT_BGRA)
-                    prev_system = settings.system
-
-                _apply_monitor_settings(crt, settings)
-
                 frame_bgra = cv2.cvtColor(frame, cv2.COLOR_BGR2BGRA)
-                output = crt.process(
-                    frame_bgra,
-                    noise=settings.noise,
-                    hue=settings.artifact_hue,
-                    num_frames=settings.num_frames,
-                    progressive=settings.progressive,
-                    raw=settings.raw,
-                    as_color=settings.as_color,
-                    in_format=PIX_FORMAT_BGRA,
-                    do_aberration=settings.do_aberration,
-                    xoffset=settings.xoffset,
-                    yoffset=settings.yoffset,
-                )
+                crt = _HandlerState.get_crt_slot("a", settings.system, w, h)
+                output = _process_frame(crt, frame_bgra, settings)
                 writer.write(cv2.cvtColor(output, cv2.COLOR_BGRA2BGR))
                 frame_idx += 1
                 wm.progress_update(frame_idx)
@@ -848,11 +814,6 @@ class SEQUENCER_OT_ntsc_mix_render(Operator):
             self.report({"ERROR"}, f"Cannot create output: {out_path}")
             return {"CANCELLED"}
 
-        crt_a = None
-        crt_b = None
-        prev_sys_a = None
-        prev_sys_b = None
-
         wm = context.window_manager
         wm.progress_begin(0, frames_to_process)
 
@@ -863,19 +824,6 @@ class SEQUENCER_OT_ntsc_mix_render(Operator):
         try:
             for timeline_frame in range(start, end):
                 scene.frame_set(timeline_frame)
-
-                # Recreate CRTs if system changed via keyframe
-                if crt_a is None or settings_a.system != prev_sys_a:
-                    crt_a = CRT(settings_a.system, out_w=w, out_h=h,
-                                out_format=PIX_FORMAT_BGRA)
-                    prev_sys_a = settings_a.system
-                if crt_b is None or settings_b.system != prev_sys_b:
-                    crt_b = CRT(settings_b.system, out_w=w, out_h=h,
-                                out_format=PIX_FORMAT_BGRA)
-                    prev_sys_b = settings_b.system
-
-                _apply_monitor_settings(crt_a, settings_a)
-                _apply_monitor_settings(crt_b, settings_b)
 
                 # Read frame A
                 src_a = (timeline_frame - strip_a.frame_final_start
@@ -901,20 +849,12 @@ class SEQUENCER_OT_ntsc_mix_render(Operator):
                     fb = cv2.resize(fb, (w, h),
                                    interpolation=cv2.INTER_LINEAR)
 
-                # Modulate A with Strip A settings
-                mkw_a = _modulate_kwargs(settings_a)
-                crt_a.modulate(fa, field=0, frame=0, **mkw_a)
-                sig_a = crt_a.get_analog_signal()
-
-                # Modulate B with Strip B settings
-                mkw_b = _modulate_kwargs(settings_b)
-                crt_b.modulate(fb, field=0, frame=0, **mkw_b)
-                sig_b = crt_b.get_analog_signal()
-
-                # Mix + demodulate through CRT A
-                mixed = _mix_and_normalize(sig_a, sig_b, props.mix_ratio)
-                crt_a.set_analog_signal(mixed)
-                output = crt_a.demodulate(noise=settings_a.noise)
+                crt_a = _HandlerState.get_crt_slot("a", settings_a.system, w, h)
+                crt_b = _HandlerState.get_crt_slot("b", settings_b.system, w, h)
+                output = _process_mix_frame(
+                    crt_a, crt_b, fa, fb,
+                    settings_a, settings_b, props.mix_ratio,
+                )
 
                 writer.write(cv2.cvtColor(output, cv2.COLOR_BGRA2BGR))
                 frame_idx += 1

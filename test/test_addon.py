@@ -442,27 +442,27 @@ class TestHandlerState(unittest.TestCase):
     def tearDown(self):
         addon_module._HandlerState.release_all()
 
-    def test_get_crt_creates_instance(self):
-        crt = addon_module._HandlerState.get_crt("ntsc", 320, 240)
+    def test_get_crt_slot_creates_instance(self):
+        crt = addon_module._HandlerState.get_crt_slot("a", "ntsc", 320, 240)
         self.assertIsNotNone(crt)
-        self.assertEqual(addon_module._HandlerState.crt_system, "ntsc")
-        self.assertEqual(addon_module._HandlerState.crt_w, 320)
-        self.assertEqual(addon_module._HandlerState.crt_h, 240)
+        self.assertEqual(crt.system, "ntsc")
+        self.assertEqual(crt.out_w, 320)
+        self.assertEqual(crt.out_h, 240)
 
-    def test_get_crt_caches_instance(self):
-        crt1 = addon_module._HandlerState.get_crt("ntsc", 320, 240)
-        crt2 = addon_module._HandlerState.get_crt("ntsc", 320, 240)
+    def test_get_crt_slot_caches_instance(self):
+        crt1 = addon_module._HandlerState.get_crt_slot("a", "ntsc", 320, 240)
+        crt2 = addon_module._HandlerState.get_crt_slot("a", "ntsc", 320, 240)
         self.assertIs(crt1, crt2)
 
-    def test_get_crt_recreates_on_system_change(self):
-        crt1 = addon_module._HandlerState.get_crt("ntsc", 320, 240)
-        crt2 = addon_module._HandlerState.get_crt("ntscvhs", 320, 240)
+    def test_get_crt_slot_recreates_on_system_change(self):
+        crt1 = addon_module._HandlerState.get_crt_slot("a", "ntsc", 320, 240)
+        crt2 = addon_module._HandlerState.get_crt_slot("a", "ntscvhs", 320, 240)
         self.assertIsNot(crt1, crt2)
-        self.assertEqual(addon_module._HandlerState.crt_system, "ntscvhs")
+        self.assertEqual(crt2.system, "ntscvhs")
 
-    def test_get_crt_recreates_on_resolution_change(self):
-        crt1 = addon_module._HandlerState.get_crt("ntsc", 320, 240)
-        crt2 = addon_module._HandlerState.get_crt("ntsc", 640, 480)
+    def test_get_crt_slot_recreates_on_resolution_change(self):
+        crt1 = addon_module._HandlerState.get_crt_slot("a", "ntsc", 320, 240)
+        crt2 = addon_module._HandlerState.get_crt_slot("a", "ntsc", 640, 480)
         self.assertIsNot(crt1, crt2)
 
     @unittest.skipUnless(os.path.isfile(TEST_VIDEO), "test_input.mp4 missing")
@@ -478,33 +478,32 @@ class TestHandlerState(unittest.TestCase):
         self.assertIs(cap1, cap2)
 
     def test_release_all(self):
-        addon_module._HandlerState.get_crt("ntsc", 320, 240)
-        addon_module._HandlerState.get_crt_b("ntscvhs", 320, 240)
+        addon_module._HandlerState.get_crt_slot("a", "ntsc", 320, 240)
+        addon_module._HandlerState.get_crt_slot("b", "ntscvhs", 320, 240)
         addon_module._HandlerState.release_all()
-        self.assertIsNone(addon_module._HandlerState.crt)
-        self.assertIsNone(addon_module._HandlerState.crt_b)
+        self.assertEqual(len(addon_module._HandlerState._crts), 0)
         self.assertEqual(len(addon_module._HandlerState.caps), 0)
 
-    def test_get_crt_b_creates_instance(self):
-        crt_b = addon_module._HandlerState.get_crt_b("ntsc", 320, 240)
+    def test_get_crt_slot_b_creates_instance(self):
+        crt_b = addon_module._HandlerState.get_crt_slot("b", "ntsc", 320, 240)
         self.assertIsNotNone(crt_b)
-        self.assertEqual(addon_module._HandlerState.crt_b_system, "ntsc")
+        self.assertEqual(crt_b.system, "ntsc")
 
-    def test_get_crt_b_caches(self):
-        c1 = addon_module._HandlerState.get_crt_b("ntsc", 320, 240)
-        c2 = addon_module._HandlerState.get_crt_b("ntsc", 320, 240)
+    def test_get_crt_slot_b_caches(self):
+        c1 = addon_module._HandlerState.get_crt_slot("b", "ntsc", 320, 240)
+        c2 = addon_module._HandlerState.get_crt_slot("b", "ntsc", 320, 240)
         self.assertIs(c1, c2)
 
-    def test_get_crt_b_independent_of_crt_a(self):
-        crt_a = addon_module._HandlerState.get_crt("ntsc", 320, 240)
-        crt_b = addon_module._HandlerState.get_crt_b("ntsc", 320, 240)
+    def test_slots_a_and_b_independent(self):
+        crt_a = addon_module._HandlerState.get_crt_slot("a", "ntsc", 320, 240)
+        crt_b = addon_module._HandlerState.get_crt_slot("b", "ntsc", 320, 240)
         self.assertIsNot(crt_a, crt_b)
 
-    def test_get_crt_b_recreates_on_system_change(self):
-        c1 = addon_module._HandlerState.get_crt_b("ntsc", 320, 240)
-        c2 = addon_module._HandlerState.get_crt_b("ntscvhs", 320, 240)
+    def test_get_crt_slot_b_recreates_on_system_change(self):
+        c1 = addon_module._HandlerState.get_crt_slot("b", "ntsc", 320, 240)
+        c2 = addon_module._HandlerState.get_crt_slot("b", "ntscvhs", 320, 240)
         self.assertIsNot(c1, c2)
-        self.assertEqual(addon_module._HandlerState.crt_b_system, "ntscvhs")
+        self.assertEqual(c2.system, "ntscvhs")
 
     def test_get_or_create_image(self):
         img = addon_module._HandlerState.get_or_create_image(320, 240)
@@ -569,13 +568,13 @@ class TestToggleOperator(unittest.TestCase):
 
     def test_toggle_releases_state_on_disable(self):
         # Enable → create some cache
-        addon_module._HandlerState.get_crt("ntsc", 320, 240)
+        addon_module._HandlerState.get_crt_slot("a", "ntsc", 320, 240)
         bpy.context.scene.ntsc_crt.enabled = True
         if addon_module._ntsc_frame_handler not in bpy.app.handlers.frame_change_post:
             bpy.app.handlers.frame_change_post.append(addon_module._ntsc_frame_handler)
         # Disable via operator
         bpy.ops.sequencer.ntsc_toggle()
-        self.assertIsNone(addon_module._HandlerState.crt)
+        self.assertEqual(len(addon_module._HandlerState._crts), 0)
 
 
 # ===================================================================
@@ -783,7 +782,9 @@ class TestFrameHandlerVHS(unittest.TestCase):
     def test_vhs_cache_system(self):
         self.props.enabled = True
         addon_module._ntsc_frame_handler(bpy.context.scene)
-        self.assertEqual(addon_module._HandlerState.crt_system, "ntscvhs")
+        crt = addon_module._HandlerState._crts.get("a")
+        self.assertIsNotNone(crt)
+        self.assertEqual(crt.system, "ntscvhs")
 
 
 # ===================================================================
@@ -952,8 +953,8 @@ class TestMixFrameHandler(unittest.TestCase):
         img = bpy.data.images.get(addon_module._HandlerState.preview_name)
         self.assertIsNone(img)
 
-    def test_mix_fallback_single_strip(self):
-        """With mix_enabled but only one strip, falls back to single processing."""
+    def test_mix_no_second_strip_produces_nothing(self):
+        """With mix_enabled but only one strip, no output is produced."""
         _clear_sequencer()
         strip = _add_movie_strip(TEST_VIDEO, channel=1)
         settings = addon_module._get_strip_settings(self.props, strip.name)
@@ -961,8 +962,7 @@ class TestMixFrameHandler(unittest.TestCase):
         self.props.mix_enabled = True
         addon_module._ntsc_frame_handler(bpy.context.scene)
         img = bpy.data.images.get(addon_module._HandlerState.preview_name)
-        # Falls back to single-strip processing
-        self.assertIsNotNone(img)
+        self.assertIsNone(img)
 
     def test_mix_with_custom_settings(self):
         import numpy as np
@@ -993,9 +993,13 @@ class TestMixFrameHandler(unittest.TestCase):
         img.pixels.foreach_get(pixels)
         self.assertGreater(np.max(pixels), 0.0)
         # Verify CRT B was created with ntscvhs system
-        self.assertEqual(addon_module._HandlerState.crt_b_system, "ntscvhs")
+        crt_b = addon_module._HandlerState._crts.get("b")
+        self.assertIsNotNone(crt_b)
+        self.assertEqual(crt_b.system, "ntscvhs")
         # Verify CRT A is still ntsc
-        self.assertEqual(addon_module._HandlerState.crt_system, "ntsc")
+        crt_a = addon_module._HandlerState._crts.get("a")
+        self.assertIsNotNone(crt_a)
+        self.assertEqual(crt_a.system, "ntsc")
 
     def test_mix_handler_skips_out_of_range(self):
         self.props.mix_enabled = True
@@ -1003,6 +1007,29 @@ class TestMixFrameHandler(unittest.TestCase):
         addon_module._ntsc_frame_handler(bpy.context.scene)
         img = bpy.data.images.get(addon_module._HandlerState.preview_name)
         self.assertIsNone(img)
+
+    def test_mix_b_knobs_affect_output(self):
+        """Changing strip B's hue produces different output."""
+        import numpy as np
+        self.props.mix_enabled = True
+        self.props.mix_ratio = 100  # all B
+
+        # Default B settings
+        addon_module._HandlerState.release_all()
+        addon_module._ntsc_frame_handler(bpy.context.scene)
+        img = bpy.data.images.get(addon_module._HandlerState.preview_name)
+        p_default = np.zeros(len(img.pixels), dtype=np.float32)
+        img.pixels.foreach_get(p_default)
+
+        # Change B hue drastically
+        self.settings_b.hue = 180
+        addon_module._HandlerState.release_all()
+        addon_module._ntsc_frame_handler(bpy.context.scene)
+        p_changed = np.zeros(len(img.pixels), dtype=np.float32)
+        img.pixels.foreach_get(p_changed)
+
+        self.assertFalse(np.array_equal(p_default, p_changed),
+                         "Changing strip B hue should affect mix output")
 
 
 # ===================================================================

@@ -135,6 +135,16 @@ class CRT:
         """The CRT system variant name."""
         return self._system
 
+    @property
+    def out_w(self):
+        """Output width in pixels."""
+        return self._out_w
+
+    @property
+    def out_h(self):
+        """Output height in pixels."""
+        return self._out_h
+
     # --- CRT monitor settings (read/write properties) ---
 
     @property
