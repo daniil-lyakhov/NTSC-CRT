@@ -225,6 +225,7 @@ class SignalFilterDef:
     """A signal-level filter with its UI knobs and apply function."""
     name: str
     params: list                     # list[Knob]
+    toggle_attr: str = ""            # BoolProperty attr for on/off toggle
     is_active: object = None         # callable(props) -> bool
     apply: object = None             # callable(signal_int16, props) -> signal_int16
 
@@ -427,7 +428,8 @@ SIGNAL_FILTERS = [
         params=[Knob("filter_gain", "Gain",
                       "Signal gain as percentage (100 = unity, 200 = 2x)",
                       default=100, min_val=0, max_val=300)],
-        is_active=lambda p: p.filter_gain != 100,
+        toggle_attr="filter_gain_enabled",
+        is_active=lambda p: p.filter_gain_enabled,
         apply=_apply_gain,
     ),
     SignalFilterDef(
@@ -435,7 +437,8 @@ SIGNAL_FILTERS = [
         params=[Knob("filter_fuzz", "Fuzz",
                       "Hard-clip distortion amount (0 = off, 100 = max)",
                       default=0, min_val=0, max_val=100)],
-        is_active=lambda p: p.filter_fuzz > 0,
+        toggle_attr="filter_fuzz_enabled",
+        is_active=lambda p: p.filter_fuzz_enabled,
         apply=_apply_fuzz,
     ),
     SignalFilterDef(
@@ -448,11 +451,13 @@ SIGNAL_FILTERS = [
                  "Ghost/echo signal amplitude percentage",
                  default=0, min_val=0, max_val=100),
         ],
-        is_active=lambda p: p.filter_echo_delay > 0 and p.filter_echo_amount > 0,
+        toggle_attr="filter_echo_enabled",
+        is_active=lambda p: p.filter_echo_enabled,
         apply=_apply_echo,
     ),
     SignalFilterDef(
         "atmospheric",
+        toggle_attr="filter_atmo_enabled",
         params=[
             Knob("filter_atmo_strength", "Atmospheric",
                  "Pink (1/f) noise simulating atmospheric/cosmic interference "
@@ -467,7 +472,7 @@ SIGNAL_FILTERS = [
                  "30+ (extreme)",
                  default=0, min_val=0, max_val=100),
         ],
-        is_active=lambda p: p.filter_atmo_strength > 0 or p.filter_atmo_impulse > 0,
+        is_active=lambda p: p.filter_atmo_enabled,
         apply=_apply_atmospheric,
     ),
     SignalFilterDef(
@@ -480,7 +485,8 @@ SIGNAL_FILTERS = [
                  "50+ (unwatchable)",
                  default=0, min_val=0, max_val=100),
         ],
-        is_active=lambda p: p.filter_jitter_strength > 0,
+        toggle_attr="filter_jitter_enabled",
+        is_active=lambda p: p.filter_jitter_enabled,
         apply=_apply_h_jitter,
     ),
 ]
@@ -968,6 +974,8 @@ class SEQUENCER_OT_ntsc_reset(Operator):
             setattr(props, k.attr, k.default)
         props.signal_filters = False
         for f in SIGNAL_FILTERS:
+            if f.toggle_attr:
+                setattr(props, f.toggle_attr, False)
             for p in f.params:
                 setattr(props, p.attr, p.default)
         self.report({"INFO"}, "NTSC-CRT parameters reset")
@@ -1375,8 +1383,16 @@ class SEQUENCER_PT_ntsc_crt(Panel):
         col = fbox.column(align=True)
         col.enabled = props.signal_filters
         for f in SIGNAL_FILTERS:
+            if f.toggle_attr:
+                col.separator()
+                col.prop(props, f.toggle_attr, text=f.name.capitalize(),
+                         icon="CHECKBOX_HLT" if getattr(props, f.toggle_attr)
+                         else "CHECKBOX_DEHLT")
+            sub = col.column(align=True)
+            sub.enabled = props.signal_filters and (
+                getattr(props, f.toggle_attr) if f.toggle_attr else True)
             for p in f.params:
-                col.prop(props, p.attr, slider=p.slider)
+                sub.prop(props, p.attr, slider=p.slider)
 
         # Active strip settings
         if strip:
@@ -1460,6 +1476,12 @@ def register():
         NTSCCRTProperties.__annotations__[k.attr] = _build_blender_prop(
             k, _on_global_knob_update)
     for f in SIGNAL_FILTERS:
+        if f.toggle_attr:
+            NTSCCRTProperties.__annotations__[f.toggle_attr] = BoolProperty(
+                name=f"{f.name.capitalize()} Enabled",
+                description=f"Enable/disable the {f.name} signal filter",
+                default=False, update=_on_global_knob_update,
+            )
         for p in f.params:
             NTSCCRTProperties.__annotations__[p.attr] = _build_blender_prop(
                 p, _on_global_knob_update)
