@@ -498,13 +498,13 @@ SIGNAL_FILTERS = [
                  "— correlated across scan lines. "
                  "Realistic: 5-15 (weak signal), 25-40 (fringe reception), "
                  "50+ (unwatchable snow)",
-                 default=0, min_val=0, max_val=100),
+                 default=15, min_val=0, max_val=100),
             Knob("filter_atmo_impulse", "Impulse",
                  "Random spike bursts from lightning/electrical interference "
                  "— bleeds across adjacent scan lines. "
                  "Realistic: 2-8 (suburban), 10-20 (nearby thunderstorm), "
                  "30+ (extreme)",
-                 default=0, min_val=0, max_val=100),
+                 default=8, min_val=0, max_val=100),
         ],
         is_active=lambda p: p.filter_atmo_enabled,
         apply=_apply_atmospheric,
