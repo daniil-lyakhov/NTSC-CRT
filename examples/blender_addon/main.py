@@ -281,6 +281,33 @@ def _apply_atmospheric(s, props):
     return s
 
 
+def _apply_h_jitter(s, props):
+    """Smooth horizontal jitter — shifts all lines as a correlated wave.
+
+    Generates 1D pink (1/f) noise along the vertical axis so neighbouring
+    scan lines shift by similar amounts, producing a wobbly/warped picture
+    like bad horizontal sync or a damaged VHS tape.
+    """
+    strength = props.filter_jitter_strength
+    vres = s.shape[0]
+    # 1D pink noise: correlated shifts per scan line
+    white = np.fft.rfft(np.random.standard_normal(vres))
+    freqs = np.fft.rfftfreq(vres)
+    freqs[0] = 1.0
+    white *= 1.0 / np.sqrt(freqs)
+    white[0] = 0.0
+    offsets = np.fft.irfft(white, n=vres)
+    std = offsets.std()
+    if std > 0:
+        offsets /= std
+    # Scale: strength 10 ≈ subtle wobble, 50 ≈ heavy warp
+    offsets = (offsets * strength * 0.5).astype(np.int32)
+    out = np.empty_like(s)
+    for row in range(vres):
+        out[row] = np.roll(s[row], offsets[row])
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Registries — add a new effect by adding ONE entry here
 # ---------------------------------------------------------------------------
@@ -442,6 +469,19 @@ SIGNAL_FILTERS = [
         ],
         is_active=lambda p: p.filter_atmo_strength > 0 or p.filter_atmo_impulse > 0,
         apply=_apply_atmospheric,
+    ),
+    SignalFilterDef(
+        "jitter",
+        params=[
+            Knob("filter_jitter_strength", "H-Jitter",
+                 "Horizontal jitter — smooth correlated line displacement "
+                 "simulating sync instability or tape wobble. "
+                 "Realistic: 5-15 (worn tape), 25-40 (bad tracking), "
+                 "50+ (unwatchable)",
+                 default=0, min_val=0, max_val=100),
+        ],
+        is_active=lambda p: p.filter_jitter_strength > 0,
+        apply=_apply_h_jitter,
     ),
 ]
 
