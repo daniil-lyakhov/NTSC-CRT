@@ -245,6 +245,42 @@ def _apply_echo(s, props):
     return s + (ghost * props.filter_echo_amount) // 100
 
 
+def _generate_pink_noise_2d(shape):
+    """Generate 2D pink (1/f) noise correlated across scan lines."""
+    vres, hres = shape
+    white = np.random.standard_normal(shape)
+    F = np.fft.rfft2(white)
+    fv = np.fft.fftfreq(vres)[:, None]
+    fh = np.fft.rfftfreq(hres)[None, :]
+    freq_mag = np.sqrt(fv ** 2 + fh ** 2)
+    freq_mag[0, 0] = 1.0  # avoid division by zero at DC
+    F *= 1.0 / np.sqrt(freq_mag)
+    F[0, 0] = 0.0  # zero DC component
+    pink = np.fft.irfft2(F, s=shape)
+    std = pink.std()
+    if std > 0:
+        pink /= std
+    return pink
+
+
+def _apply_atmospheric(s, props):
+    """Apply atmospheric noise: 2D pink noise + impulse with vertical bleed."""
+    strength = props.filter_atmo_strength
+    impulse = props.filter_atmo_impulse
+    if strength > 0:
+        pink = _generate_pink_noise_2d(s.shape)
+        s = s + (pink * (strength / 100.0) * 50).astype(np.int16)
+    if impulse > 0:
+        prob = (impulse / 100.0) * 0.10
+        mask = np.random.random(s.shape) < prob
+        spikes = (np.random.randint(-127, 128, size=s.shape, dtype=np.int16)
+                  * mask.astype(np.int16))
+        s = s + spikes
+        for shift, decay in [(1, 0.4), (-1, 0.4), (2, 0.15), (-2, 0.15)]:
+            s = s + (np.roll(spikes, shift, axis=0) * decay).astype(np.int16)
+    return s
+
+
 # ---------------------------------------------------------------------------
 # Registries — add a new effect by adding ONE entry here
 # ---------------------------------------------------------------------------
@@ -364,6 +400,21 @@ SIGNAL_FILTERS = [
         ],
         is_active=lambda p: p.filter_echo_delay > 0 and p.filter_echo_amount > 0,
         apply=_apply_echo,
+    ),
+    SignalFilterDef(
+        "atmospheric",
+        params=[
+            Knob("filter_atmo_strength", "Atmospheric",
+                 "Pink (1/f) noise simulating atmospheric/cosmic interference "
+                 "— correlated across scan lines",
+                 default=0, min_val=0, max_val=100),
+            Knob("filter_atmo_impulse", "Impulse",
+                 "Random spike bursts from lightning/electrical interference "
+                 "— bleeds across adjacent scan lines",
+                 default=0, min_val=0, max_val=100),
+        ],
+        is_active=lambda p: p.filter_atmo_strength > 0 or p.filter_atmo_impulse > 0,
+        apply=_apply_atmospheric,
     ),
 ]
 
