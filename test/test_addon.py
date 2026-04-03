@@ -626,13 +626,21 @@ class TestFrameHandlerNTSC(unittest.TestCase):
         self.assertGreater(img.size[0], 0)
         self.assertGreater(img.size[1], 0)
 
-    def test_handler_preview_image_size_matches_video(self):
+    def test_handler_preview_image_size_matches_output_preset(self):
+        self._enable_and_process()
+        img = bpy.data.images.get(addon_module._HandlerState.preview_name)
+        # Default output_size is "ntsc" → 640×480
+        self.assertEqual(img.size[0], 640)
+        self.assertEqual(img.size[1], 480)
+
+    def test_handler_preview_image_size_source_mode(self):
         import cv2
         cap = cv2.VideoCapture(TEST_VIDEO)
         expected_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         expected_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         cap.release()
 
+        self.props.output_size = "source"
         self._enable_and_process()
         img = bpy.data.images.get(addon_module._HandlerState.preview_name)
         self.assertEqual(img.size[0], expected_w)
@@ -1069,7 +1077,7 @@ class TestResetOperatorMix(unittest.TestCase):
         self.assertEqual(props.hue, 0)
         self.assertEqual(props.brightness, 0)
         self.assertEqual(props.contrast, 180)
-        self.assertEqual(props.noise, 24)
+        self.assertEqual(props.noise, 0)
 
 
 # ===================================================================
