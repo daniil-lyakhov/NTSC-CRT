@@ -315,7 +315,7 @@ MONITOR_KNOBS = [
                 default=0, min_val=0, max_val=100,
                 group="Display", group_icon="RESTRICT_VIEW_OFF"),
     MonitorKnob("noise", "Noise", "Signal noise amount (0 = clean)",
-                default=24, min_val=0, max_val=255,
+                default=0, min_val=0, max_val=255,
                 group="Display", group_icon="RESTRICT_VIEW_OFF",
                 is_demod_kwarg=True),
 ]
@@ -332,7 +332,7 @@ STRIP_KNOBS = [
               kwarg="hue", modulate_only=True,
               group="Signal", group_icon="FORCE_HARMONIC"),
     StripKnob("num_frames", "Accumulate Frames",
-              "Frames to accumulate per output frame",
+              "Frames to accumulate per output frame, default is 4 for NTSC",
               default=4, min_val=1, max_val=16, slider=False,
               kwarg="num_frames",
               group="Signal", group_icon="FORCE_HARMONIC"),
@@ -406,11 +406,15 @@ SIGNAL_FILTERS = [
         params=[
             Knob("filter_atmo_strength", "Atmospheric",
                  "Pink (1/f) noise simulating atmospheric/cosmic interference "
-                 "— correlated across scan lines",
+                 "— correlated across scan lines. "
+                 "Realistic: 5-15 (weak signal), 25-40 (fringe reception), "
+                 "50+ (unwatchable snow)",
                  default=0, min_val=0, max_val=100),
             Knob("filter_atmo_impulse", "Impulse",
                  "Random spike bursts from lightning/electrical interference "
-                 "— bleeds across adjacent scan lines",
+                 "— bleeds across adjacent scan lines. "
+                 "Realistic: 2-8 (suburban), 10-20 (nearby thunderstorm), "
+                 "30+ (extreme)",
                  default=0, min_val=0, max_val=100),
         ],
         is_active=lambda p: p.filter_atmo_strength > 0 or p.filter_atmo_impulse > 0,
@@ -703,22 +707,51 @@ def _process_frame_with_filters(crt, frame_bgra, strip_settings, props):
 
 def _process_mix_frame(crt_a, crt_b, frame_a, frame_b,
                        settings_a, settings_b, mix_ratio, props):
-    """Modulate two frames, mix their analog signals, and demodulate."""
-    mkw_a = _modulate_kwargs(settings_a)
-    crt_a.modulate(frame_a, field=0, frame=0, **mkw_a)
-    signal_a = crt_a.get_analog_signal()
+    """Modulate two frames, mix their analog signals, and demodulate.
 
-    mkw_b = _modulate_kwargs(settings_b)
-    crt_b.modulate(frame_b, field=0, frame=0, **mkw_b)
-    signal_b = crt_b.get_analog_signal()
-
-    mixed = _mix_and_normalize(signal_a, signal_b, mix_ratio)
-    if props.signal_filters:
-        mixed = _apply_signal_filters(mixed, props)
+    Loops num_frames times (from settings_a, since crt_a demodulates)
+    with proper field/frame advancement and progressive handling.
+    """
     _apply_monitor_settings(crt_a, props)
-    crt_a.set_analog_signal(mixed)
+    mkw_a = _modulate_kwargs(settings_a)
+    mkw_b = _modulate_kwargs(settings_b)
     dkw = _demodulate_kwargs(props)
-    return crt_a.demodulate(**dkw)
+    num_frames = settings_a.num_frames
+    progressive = settings_a.progressive
+
+    field = 0
+    frame = 0
+    output = None
+
+    for i in range(num_frames):
+        crt_a.modulate(frame_a, field=field, frame=frame, **mkw_a)
+        signal_a = crt_a.get_analog_signal()
+
+        crt_b.modulate(frame_b, field=field, frame=frame, **mkw_b)
+        signal_b = crt_b.get_analog_signal()
+
+        mixed = _mix_and_normalize(signal_a, signal_b, mix_ratio)
+        if props.signal_filters:
+            mixed = _apply_signal_filters(mixed, props)
+        crt_a.set_analog_signal(mixed)
+        output = crt_a.demodulate(**dkw)
+
+        if not progressive:
+            crt_a.modulate(frame_a, field=field ^ 1, frame=frame, **mkw_a)
+            signal_a = crt_a.get_analog_signal()
+
+            crt_b.modulate(frame_b, field=field ^ 1, frame=frame, **mkw_b)
+            signal_b = crt_b.get_analog_signal()
+
+            mixed = _mix_and_normalize(signal_a, signal_b, mix_ratio)
+            if props.signal_filters:
+                mixed = _apply_signal_filters(mixed, props)
+            crt_a.set_analog_signal(mixed)
+            output = crt_a.demodulate(**dkw)
+            if (i & 1) == 0:
+                frame ^= 1
+
+    return output
 
 
 def _read_strip_frame(strip, scene_frame):
