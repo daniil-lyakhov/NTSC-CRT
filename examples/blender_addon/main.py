@@ -8,6 +8,7 @@ bl_info = {
 
 import os
 import sys
+from dataclasses import dataclass, field
 
 import bpy
 from bpy.props import (
@@ -184,6 +185,214 @@ def _mix_and_normalize(signal_a, signal_b, ratio):
 
 
 # ---------------------------------------------------------------------------
+# Knob / Filter descriptors — single source of truth for all effects
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Knob:
+    """Descriptor for a single Blender UI property."""
+    attr: str
+    label: str
+    description: str = ""
+    prop_type: str = "int"           # "int", "bool", "enum"
+    default: object = 0
+    min_val: int = 0
+    max_val: int = 100
+    slider: bool = True
+    items: list = field(default_factory=list)   # for enum props
+    group: str = ""
+    group_icon: str = "NONE"
+    row_with: str = ""               # attr name to share a row with
+
+
+@dataclass
+class MonitorKnob(Knob):
+    """A global monitor property set on the CRT instance or passed as kwarg."""
+    crt_attr: str = ""               # CRT attribute name (defaults to attr)
+    is_demod_kwarg: bool = False     # True → passed to demodulate()/process() as kwarg
+
+
+@dataclass
+class StripKnob(Knob):
+    """A per-strip property passed to process()/modulate()."""
+    kwarg: str = ""                  # kwarg name for process()/modulate(); "" = not a kwarg
+    modulate_only: bool = False      # True → only in modulate(), not in process()
+    show_if_system: str = ""         # only show if strip.system == this value
+
+
+@dataclass
+class SignalFilterDef:
+    """A signal-level filter with its UI knobs and apply function."""
+    name: str
+    params: list                     # list[Knob]
+    is_active: object = None         # callable(props) -> bool
+    apply: object = None             # callable(signal_int16, props) -> signal_int16
+
+
+# --- Individual filter apply functions ---
+
+def _apply_gain(s, props):
+    return (s * props.filter_gain) // 100
+
+
+def _apply_fuzz(s, props):
+    threshold = max(1, int(127 * (1.0 - props.filter_fuzz / 100.0)))
+    return np.clip(s, -threshold, threshold)
+
+
+def _apply_echo(s, props):
+    ghost = np.roll(s, props.filter_echo_delay, axis=1)
+    return s + (ghost * props.filter_echo_amount) // 100
+
+
+# ---------------------------------------------------------------------------
+# Registries — add a new effect by adding ONE entry here
+# ---------------------------------------------------------------------------
+
+MONITOR_KNOBS = [
+    MonitorKnob("hue", "Hue", "Color hue rotation in degrees",
+                default=0, min_val=-360, max_val=360,
+                group="Monitor", group_icon="DESKTOP"),
+    MonitorKnob("brightness", "Brightness", "Brightness offset",
+                default=0, min_val=-100, max_val=100,
+                group="Monitor", group_icon="DESKTOP"),
+    MonitorKnob("contrast", "Contrast", "Contrast multiplier",
+                default=180, min_val=0, max_val=500,
+                group="Monitor", group_icon="DESKTOP"),
+    MonitorKnob("saturation", "Saturation", "Color saturation multiplier",
+                default=10, min_val=0, max_val=200,
+                group="Monitor", group_icon="DESKTOP"),
+    MonitorKnob("black_point", "Black Point", "Black level adjustment",
+                default=0, min_val=-50, max_val=50,
+                group="Monitor", group_icon="DESKTOP"),
+    MonitorKnob("white_point", "White Point", "White level adjustment",
+                default=100, min_val=0, max_val=200,
+                group="Monitor", group_icon="DESKTOP"),
+    MonitorKnob("scanlines", "Scanlines", "Visible gaps between scan lines",
+                prop_type="bool", default=True, slider=False,
+                group="Display", group_icon="RESTRICT_VIEW_OFF",
+                row_with="blend"),
+    MonitorKnob("blend", "Blend", "Blend new field onto previous image",
+                prop_type="bool", default=True, slider=False,
+                group="Display", group_icon="RESTRICT_VIEW_OFF"),
+    MonitorKnob("v_fac", "V Stretch", "Vertical stretch factor",
+                default=0, min_val=0, max_val=100,
+                group="Display", group_icon="RESTRICT_VIEW_OFF"),
+    MonitorKnob("noise", "Noise", "Signal noise amount (0 = clean)",
+                default=24, min_val=0, max_val=255,
+                group="Display", group_icon="RESTRICT_VIEW_OFF",
+                is_demod_kwarg=True),
+]
+
+STRIP_KNOBS = [
+    StripKnob("system", "System", "CRT system variant",
+              prop_type="enum", default="ntsc",
+              items=[("ntsc", "NTSC", "Standard NTSC television"),
+                     ("ntscvhs", "NTSC VHS", "NTSC with VHS tape quality")],
+              slider=False, group="", group_icon="NONE"),
+    StripKnob("artifact_hue", "Artifact Hue",
+              "Artifact color hue offset (0-359)",
+              default=0, min_val=0, max_val=359,
+              kwarg="hue", modulate_only=True,
+              group="Signal", group_icon="FORCE_HARMONIC"),
+    StripKnob("num_frames", "Accumulate Frames",
+              "Frames to accumulate per output frame",
+              default=4, min_val=1, max_val=16, slider=False,
+              kwarg="num_frames",
+              group="Signal", group_icon="FORCE_HARMONIC"),
+    StripKnob("progressive", "Progressive",
+              "Progressive scan (vs interlaced)",
+              prop_type="bool", default=False, slider=False,
+              kwarg="progressive",
+              group="Signal", group_icon="FORCE_HARMONIC",
+              row_with="as_color"),
+    StripKnob("as_color", "Color",
+              "Full color output (off = monochrome)",
+              prop_type="bool", default=True, slider=False,
+              kwarg="as_color", modulate_only=True,
+              group="Signal", group_icon="FORCE_HARMONIC"),
+    StripKnob("raw", "Raw",
+              "Don't scale input to fit the CRT viewport",
+              prop_type="bool", default=False, slider=False,
+              kwarg="raw", modulate_only=True,
+              group="Signal", group_icon="FORCE_HARMONIC"),
+    StripKnob("xoffset", "X Offset",
+              "Horizontal offset in sample space",
+              default=0, min_val=-200, max_val=200, slider=False,
+              kwarg="xoffset", modulate_only=True,
+              group="Offsets", group_icon="ORIENTATION_CURSOR",
+              row_with="yoffset"),
+    StripKnob("yoffset", "Y Offset",
+              "Vertical offset in scan lines",
+              default=0, min_val=-200, max_val=200, slider=False,
+              kwarg="yoffset", modulate_only=True,
+              group="Offsets", group_icon="ORIENTATION_CURSOR"),
+    StripKnob("do_aberration", "VHS Aberration",
+              "Signal distortion at bottom of frame (ntscvhs only)",
+              prop_type="bool", default=False, slider=False,
+              kwarg="do_aberration", modulate_only=True,
+              group="VHS", group_icon="FILE_MOVIE",
+              show_if_system="ntscvhs"),
+]
+
+SIGNAL_FILTERS = [
+    SignalFilterDef(
+        "gain",
+        params=[Knob("filter_gain", "Gain",
+                      "Signal gain as percentage (100 = unity, 200 = 2x)",
+                      default=100, min_val=0, max_val=300)],
+        is_active=lambda p: p.filter_gain != 100,
+        apply=_apply_gain,
+    ),
+    SignalFilterDef(
+        "fuzz",
+        params=[Knob("filter_fuzz", "Fuzz",
+                      "Hard-clip distortion amount (0 = off, 100 = max)",
+                      default=0, min_val=0, max_val=100)],
+        is_active=lambda p: p.filter_fuzz > 0,
+        apply=_apply_fuzz,
+    ),
+    SignalFilterDef(
+        "echo",
+        params=[
+            Knob("filter_echo_delay", "Echo Delay",
+                 "Ghost/echo horizontal delay in samples (0 = off)",
+                 default=0, min_val=0, max_val=200),
+            Knob("filter_echo_amount", "Echo Amount",
+                 "Ghost/echo signal amplitude percentage",
+                 default=0, min_val=0, max_val=100),
+        ],
+        is_active=lambda p: p.filter_echo_delay > 0 and p.filter_echo_amount > 0,
+        apply=_apply_echo,
+    ),
+]
+
+
+# ---------------------------------------------------------------------------
+# Build Blender properties from descriptors
+# ---------------------------------------------------------------------------
+
+def _build_blender_prop(knob, update_fn):
+    """Construct a Blender property from a Knob descriptor."""
+    if knob.prop_type == "bool":
+        return BoolProperty(
+            name=knob.label, description=knob.description,
+            default=knob.default, update=update_fn,
+        )
+    if knob.prop_type == "enum":
+        return EnumProperty(
+            name=knob.label, description=knob.description,
+            items=knob.items, default=knob.default, update=update_fn,
+        )
+    # int (default)
+    return IntProperty(
+        name=knob.label, description=knob.description,
+        default=knob.default, min=knob.min_val, max=knob.max_val,
+        update=update_fn,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Property update callback — refresh preview when any knob changes
 # ---------------------------------------------------------------------------
 
@@ -211,58 +420,15 @@ def _on_global_knob_update(self, context):
 
 
 # ---------------------------------------------------------------------------
-# Per-strip CRT settings
+# Per-strip CRT settings (properties generated from STRIP_KNOBS registry)
 # ---------------------------------------------------------------------------
 
 class NTSCStripSettings(PropertyGroup):
     strip_name: StringProperty(name="Strip Name", default="")
 
-    system: EnumProperty(
-        name="System", description="CRT system variant",
-        items=[
-            ("ntsc", "NTSC", "Standard NTSC television"),
-            ("ntscvhs", "NTSC VHS", "NTSC with VHS tape quality"),
-        ],
-        default="ntsc", update=_on_strip_knob_update,
-    )
-    artifact_hue: IntProperty(
-        name="Artifact Hue", description="Artifact color hue offset (0-359)",
-        default=0, min=0, max=359, update=_on_strip_knob_update,
-    )
-    num_frames: IntProperty(
-        name="Accumulate Frames",
-        description="Frames to accumulate per output frame",
-        default=4, min=1, max=16, update=_on_strip_knob_update,
-    )
-    progressive: BoolProperty(
-        name="Progressive", description="Progressive scan (vs interlaced)",
-        default=False, update=_on_strip_knob_update,
-    )
-    raw: BoolProperty(
-        name="Raw", description="Don't scale input to fit the CRT viewport",
-        default=False, update=_on_strip_knob_update,
-    )
-    as_color: BoolProperty(
-        name="Color", description="Full color output (off = monochrome)",
-        default=True, update=_on_strip_knob_update,
-    )
-    xoffset: IntProperty(
-        name="X Offset", description="Horizontal offset in sample space",
-        default=0, min=-200, max=200, update=_on_strip_knob_update,
-    )
-    yoffset: IntProperty(
-        name="Y Offset", description="Vertical offset in scan lines",
-        default=0, min=-200, max=200, update=_on_strip_knob_update,
-    )
-    do_aberration: BoolProperty(
-        name="VHS Aberration",
-        description="Signal distortion at bottom of frame (ntscvhs only)",
-        default=False, update=_on_strip_knob_update,
-    )
-
 
 # ---------------------------------------------------------------------------
-# Scene-level globals
+# Scene-level globals (properties generated from MONITOR_KNOBS + SIGNAL_FILTERS)
 # ---------------------------------------------------------------------------
 
 class NTSCCRTProperties(PropertyGroup):
@@ -288,74 +454,10 @@ class NTSCCRTProperties(PropertyGroup):
         default="",
     )
     strip_settings: CollectionProperty(type=NTSCStripSettings)
-
-    # --- Global monitor settings (applied during demodulation) ---
-    hue: IntProperty(
-        name="Hue", description="Color hue rotation in degrees",
-        default=0, min=-360, max=360, update=_on_global_knob_update,
-    )
-    brightness: IntProperty(
-        name="Brightness", description="Brightness offset",
-        default=0, min=-100, max=100, update=_on_global_knob_update,
-    )
-    contrast: IntProperty(
-        name="Contrast", description="Contrast multiplier",
-        default=180, min=0, max=500, update=_on_global_knob_update,
-    )
-    saturation: IntProperty(
-        name="Saturation", description="Color saturation multiplier",
-        default=10, min=0, max=200, update=_on_global_knob_update,
-    )
-    black_point: IntProperty(
-        name="Black Point", description="Black level adjustment",
-        default=0, min=-50, max=50, update=_on_global_knob_update,
-    )
-    white_point: IntProperty(
-        name="White Point", description="White level adjustment",
-        default=100, min=0, max=200, update=_on_global_knob_update,
-    )
-    scanlines: BoolProperty(
-        name="Scanlines", description="Visible gaps between scan lines",
-        default=True, update=_on_global_knob_update,
-    )
-    blend: BoolProperty(
-        name="Blend", description="Blend new field onto previous image",
-        default=True, update=_on_global_knob_update,
-    )
-    v_fac: IntProperty(
-        name="V Stretch", description="Vertical stretch factor",
-        default=0, min=0, max=100, update=_on_global_knob_update,
-    )
-    noise: IntProperty(
-        name="Noise", description="Signal noise amount (0 = clean)",
-        default=24, min=0, max=255, update=_on_global_knob_update,
-    )
-
-    # --- Signal filters (applied to analog signal between modulate/demodulate) ---
     signal_filters: BoolProperty(
         name="Signal Filters",
         description="Enable signal-level filters (gain, fuzz, echo)",
         default=False, update=_on_global_knob_update,
-    )
-    filter_gain: IntProperty(
-        name="Gain",
-        description="Signal gain as percentage (100 = unity, 200 = 2x)",
-        default=100, min=0, max=300, update=_on_global_knob_update,
-    )
-    filter_fuzz: IntProperty(
-        name="Fuzz",
-        description="Hard-clip distortion amount (0 = off, 100 = max)",
-        default=0, min=0, max=100, update=_on_global_knob_update,
-    )
-    filter_echo_delay: IntProperty(
-        name="Echo Delay",
-        description="Ghost/echo horizontal delay in samples (0 = off)",
-        default=0, min=0, max=200, update=_on_global_knob_update,
-    )
-    filter_echo_amount: IntProperty(
-        name="Echo Amount",
-        description="Ghost/echo signal amplitude percentage",
-        default=0, min=0, max=100, update=_on_global_knob_update,
     )
 
 
@@ -440,9 +542,9 @@ class _HandlerState:
 
 def _apply_monitor_settings(crt, props):
     """Copy the UI monitor knobs onto a CRT instance."""
-    for attr in ("hue", "brightness", "contrast", "saturation",
-                 "black_point", "white_point", "scanlines", "blend", "v_fac"):
-        setattr(crt, attr, getattr(props, attr))
+    for k in MONITOR_KNOBS:
+        if not k.is_demod_kwarg:
+            setattr(crt, k.crt_attr or k.attr, getattr(props, k.attr))
 
 
 def _write_output_to_image(output, w, h):
@@ -456,7 +558,7 @@ def _write_output_to_image(output, w, h):
 
 
 def _apply_signal_filters(signal, props):
-    """Apply gain, fuzz, and echo filters to a raw analog signal.
+    """Apply all active signal filters from the SIGNAL_FILTERS registry.
 
     Parameters
     ----------
@@ -467,63 +569,50 @@ def _apply_signal_filters(signal, props):
     -------
     np.ndarray  int8, same shape.
     """
-    gain = props.filter_gain
-    fuzz = props.filter_fuzz
-    echo_delay = props.filter_echo_delay
-    echo_amount = props.filter_echo_amount
-
-    # Short-circuit when no filter is active
-    if gain == 100 and fuzz == 0 and (echo_delay == 0 or echo_amount == 0):
+    any_active = any(f.is_active(props) for f in SIGNAL_FILTERS)
+    if not any_active:
         return signal
 
     s = signal.astype(np.int16)
-
-    # Gain — scale entire signal
-    if gain != 100:
-        s = (s * gain) // 100
-
-    # Fuzz — hard clip at a threshold that shrinks with fuzz amount
-    if fuzz > 0:
-        threshold = max(1, int(127 * (1.0 - fuzz / 100.0)))
-        s = np.clip(s, -threshold, threshold)
-
-    # Echo / ghost — time-delayed copy mixed back in
-    if echo_delay > 0 and echo_amount > 0:
-        ghost = np.roll(s, echo_delay, axis=1)
-        s = s + (ghost * echo_amount) // 100
-
+    for f in SIGNAL_FILTERS:
+        if f.is_active(props):
+            s = f.apply(s, props)
     return np.clip(s, -128, 127).astype(np.int8)
 
 
-def _modulate_kwargs(props):
-    """Build the keyword arguments shared by modulate() calls."""
-    return dict(
-        hue=props.artifact_hue,
-        raw=props.raw,
-        as_color=props.as_color,
-        in_format=PIX_FORMAT_BGRA,
-        do_aberration=props.do_aberration,
-        xoffset=props.xoffset,
-        yoffset=props.yoffset,
-    )
+def _modulate_kwargs(settings):
+    """Build keyword arguments for modulate() from STRIP_KNOBS registry."""
+    kw = {}
+    for k in STRIP_KNOBS:
+        if k.kwarg and k.modulate_only:
+            kw[k.kwarg] = getattr(settings, k.attr)
+    kw["in_format"] = PIX_FORMAT_BGRA
+    return kw
+
+
+def _demodulate_kwargs(props):
+    """Build keyword arguments for demodulate() from MONITOR_KNOBS registry."""
+    return {k.crt_attr or k.attr: getattr(props, k.attr)
+            for k in MONITOR_KNOBS if k.is_demod_kwarg}
+
+
+def _process_kwargs(strip_settings, props):
+    """Build keyword arguments for process() from both registries."""
+    kw = {}
+    for k in STRIP_KNOBS:
+        if k.kwarg:
+            kw[k.kwarg] = getattr(strip_settings, k.attr)
+    kw["in_format"] = PIX_FORMAT_BGRA
+    for k in MONITOR_KNOBS:
+        if k.is_demod_kwarg:
+            kw[k.crt_attr or k.attr] = getattr(props, k.attr)
+    return kw
 
 
 def _process_frame(crt, frame_bgra, strip_settings, props):
     """Apply settings and process a single frame through the CRT."""
     _apply_monitor_settings(crt, props)
-    return crt.process(
-        frame_bgra,
-        noise=props.noise,
-        hue=strip_settings.artifact_hue,
-        num_frames=strip_settings.num_frames,
-        progressive=strip_settings.progressive,
-        raw=strip_settings.raw,
-        as_color=strip_settings.as_color,
-        in_format=PIX_FORMAT_BGRA,
-        do_aberration=strip_settings.do_aberration,
-        xoffset=strip_settings.xoffset,
-        yoffset=strip_settings.yoffset,
-    )
+    return crt.process(frame_bgra, **_process_kwargs(strip_settings, props))
 
 
 def _process_frame_with_filters(crt, frame_bgra, strip_settings, props):
@@ -534,6 +623,7 @@ def _process_frame_with_filters(crt, frame_bgra, strip_settings, props):
     """
     _apply_monitor_settings(crt, props)
     mkw = _modulate_kwargs(strip_settings)
+    dkw = _demodulate_kwargs(props)
     num_frames = strip_settings.num_frames
     progressive = strip_settings.progressive
 
@@ -546,14 +636,14 @@ def _process_frame_with_filters(crt, frame_bgra, strip_settings, props):
         sig = crt.get_analog_signal()
         sig = _apply_signal_filters(sig, props)
         crt.set_analog_signal(sig)
-        output = crt.demodulate(noise=props.noise)
+        output = crt.demodulate(**dkw)
 
         if not progressive:
             crt.modulate(frame_bgra, field=field ^ 1, frame=frame, **mkw)
             sig = crt.get_analog_signal()
             sig = _apply_signal_filters(sig, props)
             crt.set_analog_signal(sig)
-            output = crt.demodulate(noise=props.noise)
+            output = crt.demodulate(**dkw)
             if (i & 1) == 0:
                 frame ^= 1
 
@@ -576,7 +666,8 @@ def _process_mix_frame(crt_a, crt_b, frame_a, frame_b,
         mixed = _apply_signal_filters(mixed, props)
     _apply_monitor_settings(crt_a, props)
     crt_a.set_analog_signal(mixed)
-    return crt_a.demodulate(noise=props.noise)
+    dkw = _demodulate_kwargs(props)
+    return crt_a.demodulate(**dkw)
 
 
 def _read_strip_frame(strip, scene_frame):
@@ -711,23 +802,13 @@ class SEQUENCER_OT_ntsc_reset(Operator):
         props = context.scene.ntsc_crt
         props.mix_ratio = 50
         props.strip_settings.clear()
-        # Reset global monitor settings
-        props.hue = 0
-        props.brightness = 0
-        props.contrast = 180
-        props.saturation = 10
-        props.black_point = 0
-        props.white_point = 100
-        props.scanlines = True
-        props.blend = True
-        props.v_fac = 0
-        props.noise = 24
-        # Reset signal filter settings
+        # Reset all registry-driven properties to defaults
+        for k in MONITOR_KNOBS:
+            setattr(props, k.attr, k.default)
         props.signal_filters = False
-        props.filter_gain = 100
-        props.filter_fuzz = 0
-        props.filter_echo_delay = 0
-        props.filter_echo_amount = 0
+        for f in SIGNAL_FILTERS:
+            for p in f.params:
+                setattr(props, p.attr, p.default)
         self.report({"INFO"}, "NTSC-CRT parameters reset")
         return {"FINISHED"}
 
@@ -1026,50 +1107,64 @@ class SEQUENCER_OT_ntsc_mix_render(Operator):
 # ---------------------------------------------------------------------------
 
 def _draw_strip_knobs(layout, settings, label):
-    """Draw per-strip CRT knobs for one NTSCStripSettings entry."""
+    """Draw per-strip CRT knobs from STRIP_KNOBS registry."""
     header = layout.box()
     header.label(text=label, icon="SEQ_STRIP_META")
-    header.prop(settings, "system")
 
-    box = header.box()
-    box.label(text="Signal", icon="FORCE_HARMONIC")
-    box.prop(settings, "artifact_hue", slider=True)
-    box.prop(settings, "num_frames")
-    row = box.row()
-    row.prop(settings, "progressive")
-    row.prop(settings, "as_color")
-    box.prop(settings, "raw")
+    current_group = None
+    box = header
+    skip_row_attrs = set()  # attrs already drawn via row_with
 
-    box = header.box()
-    box.label(text="Offsets", icon="ORIENTATION_CURSOR")
-    row = box.row(align=True)
-    row.prop(settings, "xoffset")
-    row.prop(settings, "yoffset")
+    for k in STRIP_KNOBS:
+        if k.attr in skip_row_attrs:
+            continue
+        if k.show_if_system and settings.system != k.show_if_system:
+            continue
 
-    if settings.system == "ntscvhs":
-        box = header.box()
-        box.label(text="VHS", icon="FILE_MOVIE")
-        box.prop(settings, "do_aberration")
+        # Start a new group box when group changes
+        if k.group and k.group != current_group:
+            box = header.box()
+            box.label(text=k.group, icon=k.group_icon)
+            current_group = k.group
+        elif not k.group:
+            box = header
+            current_group = None
+
+        if k.row_with:
+            row = box.row()
+            row.prop(settings, k.attr)
+            row.prop(settings, k.row_with)
+            skip_row_attrs.add(k.row_with)
+        elif k.slider:
+            box.prop(settings, k.attr, slider=True)
+        else:
+            box.prop(settings, k.attr)
 
 
 def _draw_monitor_knobs(layout, props):
-    """Draw the global monitor / display / noise settings."""
-    box = layout.box()
-    box.label(text="Monitor", icon="DESKTOP")
-    box.prop(props, "hue", slider=True)
-    box.prop(props, "brightness", slider=True)
-    box.prop(props, "contrast", slider=True)
-    box.prop(props, "saturation", slider=True)
-    box.prop(props, "black_point", slider=True)
-    box.prop(props, "white_point", slider=True)
+    """Draw global monitor / display / noise settings from MONITOR_KNOBS registry."""
+    current_group = None
+    box = None
+    skip_row_attrs = set()
 
-    box = layout.box()
-    box.label(text="Display", icon="RESTRICT_VIEW_OFF")
-    row = box.row()
-    row.prop(props, "scanlines")
-    row.prop(props, "blend")
-    box.prop(props, "v_fac", slider=True)
-    box.prop(props, "noise", slider=True)
+    for k in MONITOR_KNOBS:
+        if k.attr in skip_row_attrs:
+            continue
+
+        if k.group != current_group:
+            box = layout.box()
+            box.label(text=k.group, icon=k.group_icon)
+            current_group = k.group
+
+        if k.row_with:
+            row = box.row()
+            row.prop(props, k.attr)
+            row.prop(props, k.row_with)
+            skip_row_attrs.add(k.row_with)
+        elif k.slider:
+            box.prop(props, k.attr, slider=True)
+        else:
+            box.prop(props, k.attr)
 
 
 class SEQUENCER_PT_ntsc_crt(Panel):
@@ -1114,10 +1209,9 @@ class SEQUENCER_PT_ntsc_crt(Panel):
         fbox.prop(props, "signal_filters")
         col = fbox.column(align=True)
         col.enabled = props.signal_filters
-        col.prop(props, "filter_gain", slider=True)
-        col.prop(props, "filter_fuzz", slider=True)
-        col.prop(props, "filter_echo_delay", slider=True)
-        col.prop(props, "filter_echo_amount", slider=True)
+        for f in SIGNAL_FILTERS:
+            for p in f.params:
+                col.prop(props, p.attr, slider=p.slider)
 
         # Active strip settings
         if strip:
@@ -1193,6 +1287,18 @@ _classes = (
 
 
 def register():
+    # Generate Blender properties from registries before registering classes
+    for k in STRIP_KNOBS:
+        NTSCStripSettings.__annotations__[k.attr] = _build_blender_prop(
+            k, _on_strip_knob_update)
+    for k in MONITOR_KNOBS:
+        NTSCCRTProperties.__annotations__[k.attr] = _build_blender_prop(
+            k, _on_global_knob_update)
+    for f in SIGNAL_FILTERS:
+        for p in f.params:
+            NTSCCRTProperties.__annotations__[p.attr] = _build_blender_prop(
+                p, _on_global_knob_update)
+
     for cls in _classes:
         bpy.utils.register_class(cls)
     bpy.types.Scene.ntsc_crt = PointerProperty(type=NTSCCRTProperties)
