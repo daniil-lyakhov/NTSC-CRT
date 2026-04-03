@@ -309,6 +309,40 @@ def _apply_h_jitter(s, props):
     return out
 
 
+# Ring buffer of previous signals for the delay filter
+_signal_history = []
+
+
+def _apply_delay(s, props):
+    """Temporal delay — blend previous frames' signals with exponential decay.
+
+    Maintains a ring buffer of up to *tail* past signals.  Each older
+    frame is weighted by  mix * decay^i  (i=0 is the most recent).
+    """
+    global _signal_history
+    mix = props.filter_delay_mix / 100.0
+    tail = props.filter_delay_tail
+
+    if _signal_history and _signal_history[0].shape != s.shape:
+        _signal_history.clear()
+
+    if tail > 0 and mix > 0 and _signal_history:
+        acc = s.astype(np.float32)
+        weight_sum = 1.0
+        decay = mix
+        w = decay
+        for past in _signal_history:
+            acc += past.astype(np.float32) * w
+            weight_sum += w
+            w *= decay
+        s = (acc / weight_sum).astype(np.int16)
+
+    _signal_history.insert(0, s.copy())
+    if len(_signal_history) > tail:
+        _signal_history[:] = _signal_history[:max(tail, 1)]
+    return s
+
+
 # ---------------------------------------------------------------------------
 # Registries — add a new effect by adding ONE entry here
 # ---------------------------------------------------------------------------
@@ -488,6 +522,25 @@ SIGNAL_FILTERS = [
         toggle_attr="filter_jitter_enabled",
         is_active=lambda p: p.filter_jitter_enabled,
         apply=_apply_h_jitter,
+    ),
+    SignalFilterDef(
+        "delay",
+        params=[
+            Knob("filter_delay_mix", "Delay Mix",
+                 "Decay rate for each older frame — controls how quickly "
+                 "past signals fade out. "
+                 "Realistic: 10-30 (slight ghosting), 50-70 (heavy burn-in), "
+                 "80+ (psychedelic feedback)",
+                 default=50, min_val=0, max_val=100),
+            Knob("filter_delay_tail", "Tail",
+                 "Number of past frames to accumulate. "
+                 "1 = blend with previous only, 5-10 = long trails, "
+                 "20+ = extreme feedback",
+                 default=3, min_val=1, max_val=30),
+        ],
+        toggle_attr="filter_delay_enabled",
+        is_active=lambda p: p.filter_delay_enabled,
+        apply=_apply_delay,
     ),
 ]
 
